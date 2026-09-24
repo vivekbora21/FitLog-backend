@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Django
+backend/db.sqlite3
+*.sqlite3
+backend/staticfiles/
+backend/media/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Postgres local data
+pgdata/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Node / frontend (frontend/ has its own .gitignore for the rest)
+node_modules/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
