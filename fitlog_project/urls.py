@@ -11,11 +11,11 @@ from gyms.views import GymViewSet
 from memberships.views import GymMembershipViewSet, TrainerClientViewSet, GymInvitationViewSet, AcceptInvitationView
 from exercises.views import ExerciseViewSet, MuscleGroupViewSet, EquipmentTypeViewSet
 from workouts.views import WorkoutSessionViewSet, RoutineViewSet, AssignedWorkoutViewSet, CardioEntryViewSet
-from nutrition.views import NutritionDayView, MealEntryViewSet, MacroTargetView, FoodViewSet, RecommendedMacroTargetView, RecentFoodsView, RepeatYesterdayView
+from nutrition.views import NutritionDayView, MealEntryViewSet, MacroTargetView, FoodViewSet, RecommendedMacroTargetView, RecentFoodsView, RepeatYesterdayView, NutritionHistoryView
 from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalRecordViewSet, DailyLogViewSet
 from notifications.views import NotificationViewSet
 from core.views import AuditLogViewSet
-from analytics.views import DashboardStatsView, JourneyPacingStatusView
+from analytics.views import DashboardStatsView, JourneyPacingStatusView, CalendarDayStatusView
 
 router = DefaultRouter()
 router.register(r'gyms', GymViewSet, basename='gym')
@@ -57,8 +57,11 @@ urlpatterns = [
     path('api/nutrition/macro-targets/recommended/', RecommendedMacroTargetView.as_view(), name='macro_targets_recommended'),
     path('api/nutrition/recent-foods/', RecentFoodsView.as_view(), name='recent_foods'),
     path('api/nutrition/repeat-yesterday/', RepeatYesterdayView.as_view(), name='repeat_yesterday'),
+    path('api/nutrition/history/', NutritionHistoryView.as_view(), name='nutrition_history'),
+    path('api/nutrition-history/', NutritionHistoryView.as_view(), name='nutrition_history_alt'),
     path('api/analytics/dashboard/', DashboardStatsView.as_view(), name='dashboard_stats'),
     path('api/analytics/journey-status/', JourneyPacingStatusView.as_view(), name='journey_pacing_status'),
+    path('api/analytics/calendar-day-status/', CalendarDayStatusView.as_view(), name='calendar_day_status'),
 
     # DRF Router endpoints
     path('api/', include(router.urls)),

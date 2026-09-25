@@ -117,6 +117,17 @@ class DailyLog(UUIDTimeStampedModel):
     sleep_quality = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Subjective sleep quality 1-5")
     energy_level = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Subjective energy rating 1-5")
     recovery_notes = models.TextField(blank=True, default='', help_text="Subjective recovery and fatigue notes")
+    day_status = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        choices=[
+            ('COMPLETED', 'Completed'),
+            ('REST', 'Rest Day'),
+            ('SKIPPED', 'Skipped'),
+        ],
+        help_text="Optional manual status: REST, SKIPPED, COMPLETED"
+    )
 
     class Meta:
         ordering = ['-date']

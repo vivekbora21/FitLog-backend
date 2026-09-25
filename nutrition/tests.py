@@ -325,3 +325,58 @@ class TargetHistoryTests(TestCase):
         target = MacroTarget.objects.create(user=self.user)
         target.save()
         self.assertEqual(TargetHistory.objects.filter(user=self.user).count(), 1)
+
+
+class NutritionHistoryViewTests(TestCase):
+    def setUp(self):
+        self.user = make_user('historyuser@example.com', **WORKBOOK_PROFILE)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_nutrition_history_endpoint(self):
+        today = date.today()
+        program = JourneyProgram.objects.create(
+            user=self.user,
+            mode='CUT',
+            start_date=today - timedelta(days=9),
+            duration_days=30,
+            active=True
+        )
+
+        # Log meals for today and 2 days ago
+        day_today = NutritionDay.objects.create(user=self.user, date=today, water_consumed_ml=2000)
+        MealEntry.objects.create(
+            nutrition_day=day_today,
+            meal_type='BREAKFAST',
+            name='Oatmeal & Protein',
+            calories=450,
+            protein_g=35.0,
+            carbs_g=50.0,
+            fat_g=8.0,
+        )
+
+        res = self.client.get('/api/nutrition-history/?days=10')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+
+        self.assertIn('history', data)
+        self.assertIn('targets', data)
+        self.assertIn('program', data)
+        self.assertEqual(len(data['history']), 10)
+
+        # Today should be Day 10 (started 9 days ago)
+        today_entry = data['history'][0]
+        self.assertEqual(today_entry['date'], today.isoformat())
+        self.assertEqual(today_entry['program_day_number'], 10)
+        self.assertEqual(today_entry['total_calories'], 450)
+        self.assertEqual(today_entry['total_protein'], 35.0)
+        self.assertEqual(today_entry['water_consumed_ml'], 2000)
+        self.assertTrue(today_entry['has_logged'])
+        self.assertEqual(today_entry['meal_count'], 1)
+        self.assertEqual(today_entry['meals'][0]['name'], 'Oatmeal & Protein')
+
+        # Day with no food
+        empty_entry = data['history'][1]
+        self.assertFalse(empty_entry['has_logged'])
+        self.assertEqual(empty_entry['total_calories'], 0)
+        self.assertEqual(empty_entry['program_day_number'], 9)

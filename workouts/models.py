@@ -110,7 +110,7 @@ class JourneyProgram(UUIDTimeStampedModel):
         return self.target_cardio_minutes_later
 
 class ProgramDay(UUIDTimeStampedModel):
-    STATUS_CHOICES = [('UPCOMING', 'Upcoming'), ('COMPLETED', 'Completed'), ('MISSED', 'Missed')]
+    STATUS_CHOICES = [('UPCOMING', 'Upcoming'), ('COMPLETED', 'Completed'), ('MISSED', 'Missed'), ('REST', 'Rest Day')]
     program = models.ForeignKey(JourneyProgram, on_delete=models.CASCADE, related_name='days')
     day_number = models.PositiveSmallIntegerField()
     routine = models.ForeignKey(Routine, on_delete=models.PROTECT, related_name='program_days')

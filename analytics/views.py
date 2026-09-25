@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import permissions
+from rest_framework import permissions, status
 from django.db import models
 from workouts.models import WorkoutSession, AssignedWorkout, CardioEntry, JourneyProgram, ProgramDay
 from nutrition.defaults import DEFAULT_MACRO_TARGETS
@@ -262,6 +262,96 @@ class DashboardStatsView(APIView):
             sleep_target=target.sleep_hours,
         )
 
+        # Calendar days (last 90 days to today + 14 days)
+        cal_start = today - timedelta(days=90)
+        cal_end = today + timedelta(days=14)
+        cal_sessions = user_sessions.filter(
+            started_at__date__gte=cal_start,
+            started_at__date__lte=cal_end
+        ).prefetch_related('exercises__sets', 'routine')
+
+        sessions_by_date = {}
+        for s in cal_sessions:
+            d_key = s.started_at.strftime('%Y-%m-%d')
+            if d_key not in sessions_by_date:
+                sessions_by_date[d_key] = []
+            sessions_by_date[d_key].append(s)
+
+        daily_logs_map = {
+            dl.date.strftime('%Y-%m-%d'): dl
+            for dl in DailyLog.objects.filter(user=user, date__gte=cal_start, date__lte=cal_end)
+        }
+
+        program_days_map = {}
+        if program and program.start_date:
+            for pd in program.days.select_related('routine').all():
+                p_date = program.start_date + timedelta(days=pd.day_number - 1)
+                program_days_map[p_date.strftime('%Y-%m-%d')] = pd
+
+        calendar_days = {}
+        curr_d = cal_start
+        while curr_d <= cal_end:
+            k = curr_d.strftime('%Y-%m-%d')
+            s_list = sessions_by_date.get(k, [])
+            dl = daily_logs_map.get(k)
+            pd = program_days_map.get(k)
+
+            c_status = 'UPCOMING'
+            workout_title = None
+            duration_min = 0
+            volume_kg = 0.0
+            exercises_count = 0
+
+            if s_list:
+                c_status = 'COMPLETED'
+                first_s = s_list[0]
+                workout_title = first_s.title or (first_s.routine.name if first_s.routine else 'Workout Session')
+                duration_min = round(sum(s.duration_seconds for s in s_list) / 60)
+                volume_kg = round(sum(s.total_volume_kg() for s in s_list), 1)
+                exercises_count = sum(s.exercises.count() for s in s_list)
+            elif dl and dl.day_status:
+                c_status = dl.day_status
+            elif dl and dl.recovery_notes:
+                rn = dl.recovery_notes.lower()
+                if 'rest' in rn or 'recovery' in rn:
+                    c_status = 'REST'
+                elif 'skip' in rn or 'missed' in rn:
+                    c_status = 'SKIPPED'
+                elif 'completed' in rn:
+                    c_status = 'COMPLETED'
+            elif pd:
+                r_name = (pd.routine.name if pd.routine else pd.label).lower()
+                is_rest = 'rest' in r_name or 'recovery' in r_name or pd.is_optional
+                if pd.status == 'COMPLETED':
+                    c_status = 'REST' if is_rest else 'COMPLETED'
+                elif pd.status == 'REST':
+                    c_status = 'REST'
+                elif pd.status == 'MISSED':
+                    c_status = 'SKIPPED'
+
+            calendar_days[k] = {
+                'date': k,
+                'status': c_status,
+                'has_workout': len(s_list) > 0,
+                'sessions_count': len(s_list),
+                'workout_title': workout_title,
+                'duration_min': duration_min,
+                'volume_kg': volume_kg,
+                'exercises_count': exercises_count,
+                'notes': dl.recovery_notes if dl else '',
+                'steps': dl.steps if dl else None,
+                'sleep_hours': dl.sleep_hours if dl else None,
+                'program_day': {
+                    'day_number': pd.day_number,
+                    'label': pd.label or (pd.routine.name if pd.routine else f'Day {pd.day_number}'),
+                    'routine_id': str(pd.routine_id) if pd.routine_id else None,
+                    'routine_name': pd.routine.name if pd.routine else '',
+                    'status': pd.status,
+                    'is_optional': pd.is_optional,
+                } if pd else None,
+            }
+            curr_d += timedelta(days=1)
+
         return Response({
             'streak_days': streak,
             'workouts_this_week': workouts_this_week,
@@ -289,11 +379,13 @@ class DashboardStatsView(APIView):
                 'weight_kg': weights[-1].weight_kg if weights and weights[-1].date == today else None,
             },
             'activity_heatmap': activity_dates,
+            'calendar_days': calendar_days,
             'pending_assigned_workout': pending_workout_data,
             'recent_prs': prs_data,
             'journey': {
                 'mode': program.mode if program else 'CUT',
                 'mode_label': dict(JourneyProgram.MODE_CHOICES).get(program.mode, program.mode) if program else 'Cut Mode',
+                'start_date': program.start_date.isoformat() if program and program.start_date else None,
                 'copilot_insight': pacing_data.get('copilot_insight', ''),
                 'current_weight': current_weight,
                 'starting_weight': resolved_starting_weight,
@@ -329,4 +421,58 @@ class JourneyPacingStatusView(APIView):
     def get(self, request):
         pacing = calculate_journey_pacing(request.user)
         return Response(pacing)
+
+
+class CalendarDayStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        date_str = request.data.get('date')
+        new_status = request.data.get('status')
+        notes = request.data.get('notes', '')
+
+        if not date_str:
+            return Response({'error': 'Date is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if new_status not in ('COMPLETED', 'REST', 'SKIPPED', 'CLEAR'):
+            return Response({'error': 'Invalid status. Choose COMPLETED, REST, SKIPPED, or CLEAR.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            target_date = date.fromisoformat(date_str)
+        except ValueError:
+            return Response({'error': 'Invalid date format (use YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
+
+        dl, _ = DailyLog.objects.get_or_create(user=user, date=target_date)
+        dl.day_status = new_status if new_status != 'CLEAR' else ''
+        if notes:
+            dl.recovery_notes = notes
+        elif new_status == 'REST' and not dl.recovery_notes:
+            dl.recovery_notes = 'Rest day & recovery'
+        elif new_status == 'SKIPPED' and not dl.recovery_notes:
+            dl.recovery_notes = 'Workout skipped'
+        dl.save()
+
+        # Update program day if active program matches date
+        program = JourneyProgram.objects.filter(user=user, active=True).first()
+        if program and program.start_date:
+            day_num = (target_date - program.start_date).days + 1
+            if 1 <= day_num <= program.duration_days:
+                pd = program.days.filter(day_number=day_num).first()
+                if pd:
+                    if new_status == 'COMPLETED':
+                        pd.status = 'COMPLETED'
+                    elif new_status == 'REST':
+                        pd.status = 'REST'
+                    elif new_status == 'SKIPPED':
+                        pd.status = 'MISSED'
+                    elif new_status == 'CLEAR':
+                        pd.status = 'UPCOMING'
+                    pd.save(update_fields=['status', 'updated_at'])
+
+        return Response({
+            'success': True,
+            'date': date_str,
+            'status': new_status,
+            'notes': dl.recovery_notes,
+        })
 

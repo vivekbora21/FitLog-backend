@@ -136,6 +136,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'name': program.name,
                 'mode': program.mode,
                 'mode_label': dict(JourneyProgram.MODE_CHOICES).get(program.mode, program.mode),
+                'start_date': program.start_date.isoformat() if program.start_date else None,
                 'current_day': program.current_day,
                 'duration_days': program.duration_days,
             },
@@ -168,6 +169,28 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             },
             'days': ProgramDaySerializer(days, many=True, context={'request': request}).data,
         })
+
+    @action(detail=False, methods=['post'], url_path='update-program-day')
+    def update_program_day(self, request):
+        user = request.user
+        day_number = request.data.get('day_number')
+        new_status = request.data.get('status')
+        if not day_number or new_status not in ('COMPLETED', 'MISSED', 'UPCOMING', 'REST'):
+            return Response({'error': 'day_number and valid status (COMPLETED, MISSED, UPCOMING, REST) required.'}, status=status.HTTP_400_BAD_REQUEST)
+        program = JourneyProgram.objects.filter(user=user, active=True).first()
+        if not program:
+            return Response({'error': 'No active program.'}, status=status.HTTP_404_NOT_FOUND)
+        pd = program.days.filter(day_number=int(day_number)).first()
+        if not pd:
+            return Response({'error': 'Program day not found.'}, status=status.HTTP_404_NOT_FOUND)
+        pd.status = new_status
+        pd.save(update_fields=['status', 'updated_at'])
+        if new_status in ('COMPLETED', 'MISSED', 'REST') and int(day_number) == program.current_day:
+            next_day = program.days.filter(day_number__gt=program.current_day, status='UPCOMING').order_by('day_number').first()
+            if next_day:
+                program.current_day = next_day.day_number
+                program.save(update_fields=['current_day', 'updated_at'])
+        return Response({'success': True, 'day_number': day_number, 'status': new_status, 'current_day': program.current_day})
 
     @action(detail=False, methods=['get'], url_path='journey-history')
     def journey_history(self, request):

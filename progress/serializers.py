@@ -36,7 +36,7 @@ class DailyLogSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'date', 'steps', 'sleep_hours',
             'sleep_quality', 'energy_level', 'recovery_notes',
-            'created_at', 'updated_at'
+            'day_status', 'created_at', 'updated_at'
         ]
         read_only_fields = ['user', 'created_at', 'updated_at']
 

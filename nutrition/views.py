@@ -6,7 +6,8 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from .models import MacroTarget, NutritionDay, MealEntry
 from .serializers import MacroTargetSerializer, NutritionDaySerializer, MealEntrySerializer, FoodSerializer, foods_visible_to
-from .targets import calculate_recommended_targets, get_or_create_macro_target, resolve_target_update, targets_payload
+from .targets import calculate_recommended_targets, get_or_create_macro_target, resolve_target_update, targets_payload, TargetTimeline
+from workouts.models import JourneyProgram
 
 class NutritionDayView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -257,3 +258,92 @@ class RepeatYesterdayView(APIView):
             'meals': MealEntrySerializer(new_entries, many=True).data,
             'day': NutritionDaySerializer(today_day).data,
         }, status=status.HTTP_201_CREATED)
+
+
+class NutritionHistoryView(APIView):
+    """
+    Returns a daily stream of nutrition history for the user,
+    with totals, targets, meals summary, and journey program day alignment.
+    Accepts ?days=N (default 30, max 90).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            days = int(request.query_params.get('days', 30))
+        except (ValueError, TypeError):
+            days = 30
+        days = min(max(1, days), 90)
+
+        today = date.today()
+        start_date = today - timedelta(days=days - 1)
+
+        # Prefetch days and meals for user in range
+        nutrition_days = (
+            NutritionDay.objects.filter(
+                user=request.user,
+                date__gte=start_date,
+                date__lte=today,
+            )
+            .prefetch_related('meals')
+            .order_by('-date')
+        )
+        nutrition_days_map = {nd.date: nd for nd in nutrition_days}
+
+        timeline = TargetTimeline(request.user)
+        program = JourneyProgram.objects.filter(user=request.user, active=True).first()
+
+        history_list = []
+        for i in range(days):
+            d = today - timedelta(days=i)
+            nd = nutrition_days_map.get(d)
+            day_target = timeline.on(d)
+
+            prog_day_num = None
+            if program and program.start_date:
+                diff_days = (d - program.start_date).days
+                day_num = diff_days + 1
+                if 1 <= day_num <= program.duration_days:
+                    prog_day_num = day_num
+
+            meals_data = []
+            if nd:
+                for m in nd.meals.all():
+                    meals_data.append({
+                        'id': str(m.id),
+                        'name': m.name,
+                        'meal_type': m.meal_type,
+                        'calories': m.calories,
+                        'protein_g': m.protein_g,
+                        'carbs_g': m.carbs_g,
+                        'fat_g': m.fat_g,
+                        'servings': m.servings,
+                    })
+
+            history_list.append({
+                'date': d.isoformat(),
+                'program_day_number': prog_day_num,
+                'total_calories': nd.total_calories() if nd else 0,
+                'total_protein': nd.total_protein() if nd else 0.0,
+                'total_carbs': nd.total_carbs() if nd else 0.0,
+                'total_fat': nd.total_fat() if nd else 0.0,
+                'water_consumed_ml': nd.water_consumed_ml if nd else 0,
+                'meal_count': len(meals_data),
+                'meals': meals_data,
+                'has_logged': bool(meals_data or (nd and nd.water_consumed_ml > 0)),
+                'target_calories': day_target.daily_calories,
+                'target_protein': day_target.protein_g,
+                'target_carbs': day_target.carbs_g,
+                'target_fat': day_target.fat_g,
+                'target_water': day_target.water_ml,
+            })
+
+        return Response({
+            'history': history_list,
+            'targets': MacroTargetSerializer(timeline.current).data,
+            'program': {
+                'start_date': program.start_date.isoformat() if program and program.start_date else None,
+                'duration_days': program.duration_days if program else 30,
+                'name': program.name if program else 'Fitness Journey',
+            } if program else None,
+        })
