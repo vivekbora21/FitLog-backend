@@ -3,6 +3,7 @@ services:
     name: fitlog-backend
     runtime: python
     plan: free
+    region: singapore
     buildCommand: ./build.sh
     startCommand: gunicorn fitlog_project.wsgi:application --bind 0.0.0.0:$PORT
     envVars:
