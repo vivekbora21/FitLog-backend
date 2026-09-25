@@ -1,12 +1,15 @@
+import uuid
 from datetime import date, timedelta
 from collections import Counter
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Count, Q
-from .models import Routine, AssignedWorkout, WorkoutSession, JourneyProgram, ProgramDay, CardioEntry
+from .models import Routine, AssignedWorkout, WorkoutSession, WorkoutExercise, JourneyProgram, ProgramDay, CardioEntry
+from progress.records import recompute_personal_records
 from .serializers import RoutineSerializer, AssignedWorkoutSerializer, WorkoutSessionSerializer, ProgramDaySerializer, CardioEntrySerializer
 from memberships.models import TrainerClientAssignment, GymMembership
 from progress.models import WeightEntry, BodyMeasurement, PersonalRecord
@@ -48,6 +51,78 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         return WorkoutSession.objects.filter(user=user).prefetch_related(
             'exercises__sets', 'exercises__exercise'
         )
+
+    def _require_owner(self, instance):
+        # Coaches can read a client's sessions via ?client_id, but only the owner may change them.
+        if instance.user_id != self.request.user.id:
+            raise PermissionDenied('You can only change your own workouts.')
+
+    def perform_update(self, serializer):
+        self._require_owner(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._require_owner(instance)
+        user = instance.user
+        exercise_ids = list(instance.exercises.values_list('exercise_id', flat=True))
+        with transaction.atomic():
+            instance.delete()
+            recompute_personal_records(user, exercise_ids)
+
+    @action(detail=False, methods=['get'], url_path='last-performance')
+    def last_performance(self, request):
+        """
+        ?exercises=<id>,<id>[&exclude_session=<id>] -> the sets from the most recent
+        session that logged each exercise, so the logger can show "last time".
+        """
+        def as_uuid(value):
+            try:
+                return str(uuid.UUID(value))
+            except (TypeError, ValueError):
+                return None
+
+        ids = [u for u in (as_uuid(i) for i in request.query_params.get('exercises', '').split(',')) if u][:30]
+        exclude = as_uuid(request.query_params.get('exclude_session'))
+        result = {}
+        for exercise_id in ids:
+            qs = WorkoutExercise.objects.filter(session__user=request.user, exercise_id=exercise_id)
+            if exclude:
+                qs = qs.exclude(session_id=exclude)
+            latest = qs.select_related('session').prefetch_related('sets').order_by('-session__started_at').first()
+            if not latest:
+                continue
+            result[exercise_id] = {
+                'date': latest.session.started_at.date().isoformat(),
+                'sets': [
+                    {'set_type': s.set_type, 'weight_kg': s.weight_kg, 'reps': s.reps}
+                    for s in latest.sets.all() if s.reps > 0
+                ],
+            }
+        return Response(result)
+
+    @action(detail=False, methods=['get'], url_path='recent-exercises')
+    def recent_exercises(self, request):
+        """Distinct exercises from the user's latest sessions, most recent first."""
+        rows = (
+            WorkoutExercise.objects
+            .filter(session__user=request.user)
+            .select_related('exercise__primary_muscle', 'session')
+            .order_by('-session__started_at')[:200]
+        )
+        seen, out = set(), []
+        for row in rows:
+            if row.exercise_id in seen:
+                continue
+            seen.add(row.exercise_id)
+            out.append({
+                'id': str(row.exercise_id),
+                'name': row.exercise.name,
+                'primary_muscle_name': row.exercise.primary_muscle.name,
+                'last_date': row.session.started_at.date().isoformat(),
+            })
+            if len(out) >= 15:
+                break
+        return Response(out)
 
     @action(detail=False, methods=['get'], url_path='today')
     def today(self, request):

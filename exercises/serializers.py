@@ -16,10 +16,17 @@ class ExerciseSerializer(serializers.ModelSerializer):
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
     gym_name = serializers.CharField(source='gym.name', read_only=True)
     is_global = serializers.BooleanField(read_only=True)
+    is_custom = serializers.SerializerMethodField()
+    slug = serializers.SlugField(max_length=150, required=False)
 
     class Meta:
         model = Exercise
         fields = [
             'id', 'name', 'slug', 'gym', 'gym_name', 'primary_muscle', 'primary_muscle_name',
-            'secondary_muscles', 'equipment', 'equipment_name', 'instructions', 'video_url', 'is_global'
+            'secondary_muscles', 'equipment', 'equipment_name', 'instructions', 'video_url', 'is_global',
+            'is_custom'
         ]
+        read_only_fields = ['gym']
+
+    def get_is_custom(self, obj):
+        return obj.created_by_id is not None

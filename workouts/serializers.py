@@ -7,6 +7,7 @@ from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, W
 from exercises.models import Exercise
 from exercises.serializers import ExerciseSerializer
 from progress.models import PersonalRecord
+from progress.records import recompute_personal_records
 from core.models import AuditLog
 from notifications.models import Notification
 
@@ -133,6 +134,36 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         )
 
         return session
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        # Program-day completion and assigned-workout status were settled when the
+        # session was created; an edit only rewrites the log itself.
+        validated_data.pop('routine', None)
+        validated_data.pop('assigned_workout', None)
+        exercises_data = validated_data.pop('exercises', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if 'started_at' in validated_data or 'duration_seconds' in validated_data:
+            instance.completed_at = instance.started_at + timedelta(seconds=instance.duration_seconds or 0)
+        instance.save()
+
+        if exercises_data is not None:
+            affected = set(instance.exercises.values_list('exercise_id', flat=True))
+            instance.exercises.all().delete()
+            for ex_data in exercises_data:
+                sets_data = ex_data.pop('sets', [])
+                workout_exercise = WorkoutExercise.objects.create(session=instance, **ex_data)
+                affected.add(workout_exercise.exercise_id)
+                for s_data in sets_data:
+                    WorkoutSet.objects.create(workout_exercise=workout_exercise, **s_data)
+            recompute_personal_records(instance.user, affected)
+        elif 'started_at' in validated_data:
+            # PR dates follow the session date.
+            recompute_personal_records(instance.user, instance.exercises.values_list('exercise_id', flat=True))
+
+        return instance
 
 class RoutineExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source='exercise.name', read_only=True)

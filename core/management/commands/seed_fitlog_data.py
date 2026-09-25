@@ -304,7 +304,16 @@ class Command(BaseCommand):
         RoutineExercise.objects.get_or_create(routine=routine_upper, exercise=incline_ex, defaults={'order': 1, 'target_sets': 3, 'target_reps': '6-8', 'rest_seconds': 120, 'target_rpe': 8.5, 'suggested_weight_kg': 24, 'focus': 'Upper anchor', 'notes': '30-degree incline press.'})
         RoutineExercise.objects.get_or_create(routine=routine_upper, exercise=cable_row_ex, defaults={'order': 2, 'target_sets': 3, 'target_reps': '10-12', 'rest_seconds': 75, 'target_rpe': 8, 'focus': 'Upper back', 'notes': 'Scapular control, no lower-back swing.'})
 
-        program, _ = JourneyProgram.objects.get_or_create(user=member_user, active=True, defaults={'name': '60-Day Fitness Journey', 'start_date': date.today() - timedelta(days=4), 'current_day': 5})
+        program, _ = JourneyProgram.objects.get_or_create(
+            user=member_user,
+            active=True,
+            defaults={
+                'name': '60-Day Fitness Journey',
+                'duration_days': 60,
+                'start_date': date.today() - timedelta(days=4),
+                'current_day': 5
+            }
+        )
         weekly_cycle = [(routine_push, 'Day 1 · Push', False), (routine_pull, 'Day 2 · Pull', False), (routine_legs, 'Day 3 · Legs', False), (routine_shoulders, 'Day 4 · Shoulders / Arms', False), (routine_upper, 'Day 5 · Upper / Conditioning', False), (routine_upper, 'Day 6 · Optional Full Body', True)]
         for number in range(1, 61):
             routine, label, optional = weekly_cycle[(number - 1) % len(weekly_cycle)]
@@ -347,20 +356,23 @@ class Command(BaseCommand):
         )
 
         # 11. Past Workout Sessions for Alex (Personal Data)
-        session1, _ = WorkoutSession.objects.get_or_create(
+        session1 = WorkoutSession.objects.filter(
             user=member_user,
-            title="Apex PPL - Pull Strength",
-            started_at=timezone.now() - timedelta(days=2, hours=3),
-            defaults={
-                'gym': gym,
-                'assigned_workout': past_assigned,
-                'routine': routine_pull,
-                'completed_at': timezone.now() - timedelta(days=2, hours=2),
-                'duration_seconds': 3480,
-                'overall_rpe': 8,
-                'notes': 'Felt energetic. Hit strong deadlifts with clean lockouts.'
-            }
-        )
+            assigned_workout=past_assigned
+        ).first()
+        if not session1:
+            session1 = WorkoutSession.objects.create(
+                user=member_user,
+                assigned_workout=past_assigned,
+                title="Apex PPL - Pull Strength",
+                gym=gym,
+                routine=routine_pull,
+                started_at=timezone.now() - timedelta(days=2, hours=3),
+                completed_at=timezone.now() - timedelta(days=2, hours=2),
+                duration_seconds=3480,
+                overall_rpe=8,
+                notes='Felt energetic. Hit strong deadlifts with clean lockouts.'
+            )
         # Session 1 exercises and sets
         we1, _ = WorkoutExercise.objects.get_or_create(session=session1, exercise=deadlift_ex, defaults={'order': 1, 'rest_seconds': 180})
         WorkoutSet.objects.get_or_create(workout_exercise=we1, set_number=1, defaults={'set_type': 'WARMUP', 'weight_kg': 100.0, 'reps': 5, 'completed': True})
@@ -377,18 +389,21 @@ class Command(BaseCommand):
         WorkoutSet.objects.get_or_create(workout_exercise=we3, set_number=2, defaults={'set_type': 'NORMAL', 'weight_kg': 35.0, 'reps': 10, 'completed': True})
 
         # Session 2: Leg Day 4 days ago
-        session2, _ = WorkoutSession.objects.get_or_create(
+        session2 = WorkoutSession.objects.filter(
             user=member_user,
-            title="Heavy Squat & Hamstring Session",
-            started_at=timezone.now() - timedelta(days=4, hours=4),
-            defaults={
-                'gym': gym,
-                'completed_at': timezone.now() - timedelta(days=4, hours=3),
-                'duration_seconds': 3900,
-                'overall_rpe': 9,
-                'notes': 'Squats felt deep and crisp.'
-            }
-        )
+            title="Heavy Squat & Hamstring Session"
+        ).first()
+        if not session2:
+            session2 = WorkoutSession.objects.create(
+                user=member_user,
+                title="Heavy Squat & Hamstring Session",
+                gym=gym,
+                started_at=timezone.now() - timedelta(days=4, hours=4),
+                completed_at=timezone.now() - timedelta(days=4, hours=3),
+                duration_seconds=3900,
+                overall_rpe=9,
+                notes='Squats felt deep and crisp.'
+            )
         we_sq, _ = WorkoutExercise.objects.get_or_create(session=session2, exercise=squat_ex, defaults={'order': 1, 'rest_seconds': 180})
         WorkoutSet.objects.get_or_create(workout_exercise=we_sq, set_number=1, defaults={'set_type': 'NORMAL', 'weight_kg': 120.0, 'reps': 6, 'completed': True})
         WorkoutSet.objects.get_or_create(workout_exercise=we_sq, set_number=2, defaults={'set_type': 'NORMAL', 'weight_kg': 130.0, 'reps': 5, 'completed': True})
@@ -449,31 +464,34 @@ class Command(BaseCommand):
         )
 
         # 14. Notifications & Audit Logs
-        Notification.objects.get_or_create(
-            recipient=member_user,
-            actor=trainer_user,
-            gym=gym,
-            verb='WORKOUT_ASSIGNED',
-            message=f"Coach Marcus Rivera assigned: Apex PPL - Push Hypertrophy",
-            defaults={'is_read': False}
-        )
-        Notification.objects.get_or_create(
-            recipient=member_user,
-            actor=trainer_user,
-            gym=gym,
-            verb='FEEDBACK_POSTED',
-            message=f"Coach Marcus Rivera left feedback on your Pull workout: 'Solid deadlift speed Alex!'",
-            defaults={'is_read': False}
-        )
+        if not Notification.objects.filter(recipient=member_user, verb='WORKOUT_ASSIGNED').exists():
+            Notification.objects.create(
+                recipient=member_user,
+                actor=trainer_user,
+                gym=gym,
+                verb='WORKOUT_ASSIGNED',
+                message=f"Coach Marcus Rivera assigned: Apex PPL - Push Hypertrophy",
+                is_read=False
+            )
+        if not Notification.objects.filter(recipient=member_user, verb='FEEDBACK_POSTED').exists():
+            Notification.objects.create(
+                recipient=member_user,
+                actor=trainer_user,
+                gym=gym,
+                verb='FEEDBACK_POSTED',
+                message=f"Coach Marcus Rivera left feedback on your Pull workout: 'Solid deadlift speed Alex!'",
+                is_read=False
+            )
 
-        AuditLog.objects.get_or_create(
-            actor=owner_user,
-            gym=gym,
-            action='TRAINER_ASSIGNED',
-            resource_type='TrainerClientAssignment',
-            resource_id=str(assignment.id),
-            defaults={'details': {'trainer': trainer_user.email, 'client': member_user.email}}
-        )
+        if not AuditLog.objects.filter(actor=owner_user, gym=gym, action='TRAINER_ASSIGNED').exists():
+            AuditLog.objects.create(
+                actor=owner_user,
+                gym=gym,
+                action='TRAINER_ASSIGNED',
+                resource_type='TrainerClientAssignment',
+                resource_id=str(assignment.id),
+                details={'trainer': trainer_user.email, 'client': member_user.email}
+            )
 
         self.stdout.write(self.style.SUCCESS("FitLog database successfully seeded with all domain models and personas!"))
         self.stdout.write(f"Personas configured with default demo credentials.")

@@ -29,6 +29,14 @@ class Exercise(UUIDTimeStampedModel):
         blank=True,
         related_name='custom_exercises'
     )
+    # Set for a member's own custom movement; global catalog rows leave it empty.
+    created_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='custom_exercises'
+    )
     primary_muscle = models.ForeignKey(
         MuscleGroup,
         on_delete=models.PROTECT,
@@ -57,7 +65,7 @@ class Exercise(UUIDTimeStampedModel):
         ]
 
     def is_global(self):
-        return self.gym is None
+        return self.gym is None and self.created_by_id is None
 
     def __str__(self):
         prefix = f"[{self.gym.name}] " if self.gym else ""

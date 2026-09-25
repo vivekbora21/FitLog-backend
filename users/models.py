@@ -57,3 +57,21 @@ class UserProfile(UUIDTimeStampedModel):
 
     def __str__(self):
         return f"Profile of {self.user.email}"
+
+
+class PasswordResetCode(UUIDTimeStampedModel):
+    """
+    A short-lived 6-digit code emailed for resetting a password from the app,
+    where a long link token would have to be copied between apps.
+    Only a hash of the code is stored.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_codes')
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    used = models.BooleanField(default=False)
+
+    MAX_ATTEMPTS = 5
+
+    class Meta:
+        ordering = ['-created_at']

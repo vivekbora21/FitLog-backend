@@ -112,3 +112,54 @@ class SessionCompletedAtTests(ProgressionTestBase):
         }, format='json')
         self.assertEqual(res.status_code, 201, res.content)
         self.assertEqual(WorkoutSession.objects.get(id=res.json()['id']).completed_at, finished)
+
+
+class SessionEditTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='edit@example.com', username='edit', password='testpassword123')
+        self.other = User.objects.create_user(email='other@example.com', username='other', password='testpassword123')
+        muscle = MuscleGroup.objects.create(name='Legs', slug='legs')
+        equipment = EquipmentType.objects.create(name='Barbell', slug='barbell')
+        self.squat = Exercise.objects.create(name='Squat', slug='squat', primary_muscle=muscle, equipment=equipment)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def payload(self, weight, reps):
+        return {
+            'title': 'Legs',
+            'started_at': (timezone.now() - timedelta(hours=1)).isoformat(),
+            'duration_seconds': 3600,
+            'exercises': [{
+                'exercise': str(self.squat.id), 'order': 1, 'rest_seconds': 120,
+                'sets': [{'set_number': 1, 'set_type': 'NORMAL', 'weight_kg': weight, 'reps': reps, 'completed': True}],
+            }],
+        }
+
+    def test_edit_replaces_sets_and_lowers_pr(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(140, 5), format='json')
+        self.assertEqual(res.status_code, 201)
+        session_id = res.data['id']
+        res = self.client.put(f'/api/workouts/sessions/{session_id}/', self.payload(100, 5), format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['exercises'][0]['sets'][0]['weight_kg'], 100)
+        self.assertEqual(self.user.personal_records.get(exercise=self.squat).max_weight_kg, 100)
+
+    def test_delete_removes_orphaned_pr(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(120, 3), format='json')
+        self.client.delete(f"/api/workouts/sessions/{res.data['id']}/")
+        self.assertFalse(self.user.personal_records.exists())
+
+    def test_cannot_edit_someone_elses_session(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(120, 3), format='json')
+        intruder = APIClient()
+        intruder.force_authenticate(self.other)
+        res = intruder.patch(f"/api/workouts/sessions/{res.data['id']}/", {'title': 'x'}, format='json')
+        self.assertEqual(res.status_code, 404)
+
+    def test_last_performance_and_recent_exercises(self):
+        self.client.post('/api/workouts/sessions/', self.payload(120, 3), format='json')
+        res = self.client.get('/api/workouts/sessions/last-performance/', {'exercises': f'{self.squat.id},not-a-uuid'})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data[str(self.squat.id)]['sets'][0], {'set_type': 'NORMAL', 'weight_kg': 120, 'reps': 3})
+        res = self.client.get('/api/workouts/sessions/recent-exercises/')
+        self.assertEqual(res.data[0]['name'], 'Squat')

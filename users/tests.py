@@ -179,3 +179,59 @@ class AuthValidationTests(TestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('confirm_password', response.data)
+
+
+import re
+from django.core import mail
+from django.test import override_settings
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class AccountRecoveryTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='reset@example.com', username='reset', password='OldPass123!')
+        self.client = APIClient()
+
+    def request_code(self):
+        res = self.client.post('/api/auth/password-reset/', {'email': 'Reset@Example.com'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        return re.search(r'\b(\d{6})\b', mail.outbox[-1].body).group(1)
+
+    def test_reset_with_valid_code(self):
+        code = self.request_code()
+        res = self.client.post('/api/auth/password-reset/confirm/', {
+            'email': 'reset@example.com', 'code': code, 'new_password': 'BrandNew456!',
+        }, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('BrandNew456!'))
+        # Codes are single-use.
+        res = self.client.post('/api/auth/password-reset/confirm/', {
+            'email': 'reset@example.com', 'code': code, 'new_password': 'Another789!',
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_unknown_email_gets_same_reply_and_no_mail(self):
+        res = self.client.post('/api/auth/password-reset/', {'email': 'nobody@example.com'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_code_locks_after_too_many_wrong_attempts(self):
+        code = self.request_code()
+        wrong = '000000' if code != '000000' else '111111'
+        for _ in range(5):
+            self.client.post('/api/auth/password-reset/confirm/', {
+                'email': 'reset@example.com', 'code': wrong, 'new_password': 'BrandNew456!',
+            }, format='json')
+        res = self.client.post('/api/auth/password-reset/confirm/', {
+            'email': 'reset@example.com', 'code': code, 'new_password': 'BrandNew456!',
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_delete_account_requires_password(self):
+        self.client.force_authenticate(self.user)
+        res = self.client.post('/api/auth/delete-account/', {'password': 'wrong'}, format='json')
+        self.assertEqual(res.status_code, 400)
+        res = self.client.post('/api/auth/delete-account/', {'password': 'OldPass123!'}, format='json')
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(User.objects.filter(email='reset@example.com').exists())

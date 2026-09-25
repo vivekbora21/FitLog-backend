@@ -3,7 +3,10 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from users.views import RegisterView, LoginView, MeView, ChangePasswordView
+from users.views import (
+    RegisterView, LoginView, MeView, ChangePasswordView,
+    PasswordResetRequestView, PasswordResetConfirmView, DeleteAccountView,
+)
 from gyms.views import GymViewSet
 from memberships.views import GymMembershipViewSet, TrainerClientViewSet, GymInvitationViewSet, AcceptInvitationView
 from exercises.views import ExerciseViewSet, MuscleGroupViewSet, EquipmentTypeViewSet
@@ -44,6 +47,9 @@ urlpatterns = [
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/auth/me/', MeView.as_view(), name='auth_me'),
     path('api/auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
+    path('api/auth/password-reset/', PasswordResetRequestView.as_view(), name='password_reset'),
+    path('api/auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
+    path('api/auth/delete-account/', DeleteAccountView.as_view(), name='delete_account'),
 
     # Custom Domain Actions
     path('api/invitations/<uuid:token>/accept/', AcceptInvitationView.as_view(), name='accept_invitation'),

@@ -22,4 +22,6 @@ services:
       - key: CORS_ALLOWED_ORIGINS
         sync: false   # set to your frontend URL, e.g. https://fitlog.vercel.app
       - key: DATABASE_URL
-        sync: false   # paste your Neon connection string
+        sync: false   # paste your Neon connection string (Neon offers a permanent free Postgres tier)
+      - key: SEED_ON_BUILD
+        value: "true" # seeds exercises catalog and demo data during build
