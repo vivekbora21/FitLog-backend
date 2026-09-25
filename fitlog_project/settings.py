@@ -56,6 +56,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -87,7 +88,7 @@ WSGI_APPLICATION = 'fitlog_project.wsgi.application'
 
 # PostgreSQL Database Configuration (read from DATABASE_URL in .env)
 DATABASES = {
-    'default': dj_database_url.config(env='DATABASE_URL', conn_max_age=600),
+    'default': dj_database_url.config(env='DATABASE_URL', conn_max_age=600, conn_health_checks=True),
 }
 if not DATABASES['default']:
     raise ImproperlyConfigured('DATABASE_URL is not set. Add it to backend/.env.')
@@ -116,6 +117,11 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST Framework Configuration
@@ -144,3 +150,12 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', True)  # For seamless local development with Next.js
 CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', '')
 CORS_ALLOW_CREDENTIALS = True
+
+# Needed for the Django admin login when served over HTTPS on a public domain
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', '')
+
+# Production hardening (Render terminates TLS at its proxy)
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
