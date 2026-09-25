@@ -221,7 +221,7 @@ class Command(BaseCommand):
                     defaults={
                         'target_sets': sets, 'target_reps': str(reps),
                         'rest_seconds': rest, 'target_rpe': rpe,
-                        'target_weight_kg': weight, 'muscle_focus': focus, 'notes': notes,
+                        'suggested_weight_kg': weight, 'focus': focus, 'notes': notes,
                     }
                 )
 
@@ -514,7 +514,7 @@ class Command(BaseCommand):
             CardioEntry.objects.update_or_create(
                 user=user, date=date(2026, 9, 23),
                 defaults={'modality': 'CYCLING', 'duration_minutes': 20, 'intensity': 'Zone 2',
-                          'target_zone': '10m Treadmill Walk + 10m Cycling (res 6)', 'completed': True}
+                          'target_zone': '10m Treadmill + 10m Cycling (res 6)', 'completed': True}
             )
 
             # Mark rest days 6, 7, 11 as completed in program
