@@ -6,13 +6,27 @@ from pathlib import Path
 from datetime import timedelta
 import os
 
+import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR / '.env')
+
+
+def env_bool(name, default):
+    return os.environ.get(name, str(default)).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def env_list(name, default):
+    return [v.strip() for v in os.environ.get(name, default).split(',') if v.strip()]
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-fitlog-dev-secret-key-2026')
 
-DEBUG = True
+DEBUG = env_bool('DJANGO_DEBUG', True)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', '*')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -71,17 +85,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'fitlog_project.wsgi.application'
 
-# PostgreSQL Database Configuration
+# PostgreSQL Database Configuration (read from DATABASE_URL in .env)
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME', 'fitlog_db'),
-        'USER': os.environ.get('DB_USER', 'fitlog_user'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': os.environ.get('DB_HOST', 'localhost'),
-        'PORT': os.environ.get('DB_PORT', '5433'),
-    }
+    'default': dj_database_url.config(env='DATABASE_URL', conn_max_age=600),
 }
+if not DATABASES['default']:
+    raise ImproperlyConfigured('DATABASE_URL is not set. Add it to backend/.env.')
 
 # Custom User Model
 AUTH_USER_MODEL = 'users.User'
@@ -102,7 +111,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = os.environ.get('DJANGO_TIME_ZONE', 'UTC')
 USE_I18N = True
 USE_TZ = True
 
@@ -119,18 +128,19 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    'PAGE_SIZE': int(os.environ.get('API_PAGE_SIZE', '20')),
 }
 
 # Simple JWT Configuration
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(os.environ.get('JWT_ACCESS_TOKEN_LIFETIME_MINUTES', '1440'))),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=int(os.environ.get('JWT_REFRESH_TOKEN_LIFETIME_DAYS', '30'))),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': False,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True  # For seamless local development with Next.js
+CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', True)  # For seamless local development with Next.js
+CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', '')
 CORS_ALLOW_CREDENTIALS = True
