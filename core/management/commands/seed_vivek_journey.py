@@ -22,7 +22,7 @@ from nutrition.defaults import DIET_PLAN_OPTION_A_TARGETS
 from nutrition.models import MacroTarget, NutritionDay, MealEntry, Food
 from progress.models import WeightEntry, BodyMeasurement, PersonalRecord, DailyLog
 
-VIVEK_EMAIL = "vivek.singh@talentelgia.com"
+VIVEK_EMAIL = "svivek431@gmail.com"
 
 
 def dt(day_date, hour=7, minute=0):
@@ -42,12 +42,21 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        try:
-            user = User.objects.get(email=VIVEK_EMAIL)
-        except User.DoesNotExist:
-            raise CommandError(
-                f"No user with email {VIVEK_EMAIL} found. Sign up with that account first."
-            )
+        demo_password = os.environ.get('FITLOG_DEMO_PASSWORD', 'fitlog123')
+        user, created = User.objects.get_or_create(
+            email=VIVEK_EMAIL,
+            defaults={
+                'username': 'vivek_singh',
+                'first_name': 'Vivek',
+                'last_name': 'Singh',
+            }
+        )
+        if created:
+            user.set_password(demo_password)
+            user.save()
+            self.stdout.write(f"Created account for {VIVEK_EMAIL} with default password.")
+        else:
+            self.stdout.write(f"Using existing account for {VIVEK_EMAIL}.")
 
         excel_path = options.get('file')
         if not excel_path:
