@@ -284,9 +284,25 @@ class DashboardStatsView(APIView):
 
         program_days_map = {}
         if program and program.start_date:
-            for pd in program.days.select_related('routine').all():
-                p_date = program.start_date + timedelta(days=pd.day_number - 1)
-                program_days_map[p_date.strftime('%Y-%m-%d')] = pd
+            # ProgramDay.day_number is calendar-independent (it only advances on
+            # completion), so a naive start_date + day_number offset drifts from the
+            # truth the moment a day is skipped or logged out of order. A completed day
+            # belongs on the date it was actually completed, not a projected one.
+            all_program_days = list(program.days.select_related('routine', 'completed_session').all())
+            for pd in all_program_days:
+                if pd.completed_session_id:
+                    d_key = pd.completed_session.started_at.date().strftime('%Y-%m-%d')
+                    program_days_map[d_key] = pd
+
+            # Upcoming days (today included) haven't happened yet, so project them
+            # forward from today/current_day instead of from day 1 - that keeps the
+            # forecast from drifting further every time a day is skipped, and guarantees
+            # today's cell always matches the day the Workout tab shows as "today".
+            for pd in all_program_days:
+                if pd.completed_session_id or pd.day_number < program.current_day:
+                    continue
+                projected = today + timedelta(days=pd.day_number - program.current_day)
+                program_days_map.setdefault(projected.strftime('%Y-%m-%d'), pd)
 
         calendar_days = {}
         curr_d = cal_start
@@ -452,10 +468,18 @@ class CalendarDayStatusView(APIView):
             dl.recovery_notes = 'Workout skipped'
         dl.save()
 
-        # Update program day if active program matches date
+        # Update program day if active program matches date.
+        # For "today", defer to program.current_day (the drift-corrected pointer used
+        # by the workout plan / update-program-day flow) instead of a naive calendar
+        # offset, so the Workouts tab and Workout Plan screen always agree on which
+        # ProgramDay "today" refers to once the user has missed a day. Past dates keep
+        # the calendar-offset mapping, since history edits target a specific date.
         program = JourneyProgram.objects.filter(user=user, active=True).first()
         if program and program.start_date:
-            day_num = (target_date - program.start_date).days + 1
+            if target_date == date.today():
+                day_num = program.current_day
+            else:
+                day_num = (target_date - program.start_date).days + 1
             if 1 <= day_num <= program.duration_days:
                 pd = program.days.filter(day_number=day_num).first()
                 if pd:
@@ -468,6 +492,13 @@ class CalendarDayStatusView(APIView):
                     elif new_status == 'CLEAR':
                         pd.status = 'UPCOMING'
                     pd.save(update_fields=['status', 'updated_at'])
+                    if pd.status in ('COMPLETED', 'MISSED', 'REST') and day_num == program.current_day:
+                        next_day = program.days.filter(
+                            day_number__gt=program.current_day, status='UPCOMING'
+                        ).order_by('day_number').first()
+                        if next_day:
+                            program.current_day = next_day.day_number
+                            program.save(update_fields=['current_day', 'updated_at'])
 
         return Response({
             'success': True,

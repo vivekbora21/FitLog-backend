@@ -3,7 +3,7 @@ from django.db import transaction
 from datetime import timedelta
 from django.utils import timezone
 from .progression import progression_for
-from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, WorkoutExercise, WorkoutSet, ProgramDay, CardioEntry, JourneyProgram
+from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, WorkoutExercise, WorkoutSet, ProgramDay, CardioEntry, JourneyProgram, ProgramDayExerciseSwap
 from exercises.models import Exercise
 from exercises.serializers import ExerciseSerializer
 from progress.models import PersonalRecord
@@ -14,7 +14,11 @@ from notifications.models import Notification
 class WorkoutSetSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkoutSet
-        fields = ['id', 'set_number', 'set_type', 'weight_kg', 'reps', 'rpe', 'completed']
+        fields = [
+            'id', 'set_number', 'set_type', 'weight_kg', 'reps', 'rpe', 'completed',
+            'duration_seconds', 'distance_km', 'incline_percent', 'speed_kmh',
+            'resistance_level', 'calories', 'heart_rate', 'intensity',
+        ]
 
 class WorkoutExerciseSerializer(serializers.ModelSerializer):
     sets = WorkoutSetSerializer(many=True)
@@ -86,6 +90,45 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                         pr.estimated_one_rep_max = est_1rm
                         pr.achieved_at = session.started_at.date()
                         pr.save()
+
+        # If cardio sets were completed, log or update CardioEntry for this date
+        total_cardio_secs = 0
+        cardio_modality = 'OTHER'
+        cardio_intensity = 'Zone 2'
+        for we in session.exercises.select_related('exercise__primary_muscle').prefetch_related('sets'):
+            ex_name = we.exercise.name.lower()
+            muscle_name = (we.exercise.primary_muscle.name if we.exercise.primary_muscle else '').lower()
+            is_cardio = muscle_name == 'cardio' or 'cardio' in muscle_name or any(s.duration_seconds for s in we.sets.all())
+            if is_cardio:
+                if 'tread' in ex_name or 'incline' in ex_name or 'walk' in ex_name:
+                    cardio_modality = 'TREADMILL'
+                elif 'cycl' in ex_name or 'bike' in ex_name or 'spin' in ex_name:
+                    cardio_modality = 'CYCLING'
+                elif 'row' in ex_name:
+                    cardio_modality = 'ROWING'
+                elif 'ellipt' in ex_name:
+                    cardio_modality = 'ELLIPTICAL'
+                elif 'cross' in ex_name:
+                    cardio_modality = 'CROSS_TRAINER'
+
+                for s in we.sets.filter(completed=True):
+                    if s.duration_seconds:
+                        total_cardio_secs += s.duration_seconds
+                    if s.intensity:
+                        cardio_intensity = s.intensity
+                    if s.incline_percent is not None and s.incline_percent > 0:
+                        cardio_intensity = f"{s.incline_percent}% Incline ({cardio_intensity})"
+
+        if total_cardio_secs >= 60:
+            cardio_mins = round(total_cardio_secs / 60)
+            CardioEntry.objects.create(
+                user=user,
+                date=session.started_at.date(),
+                modality=cardio_modality,
+                duration_minutes=cardio_mins,
+                intensity=cardio_intensity,
+                completed=True
+            )
 
         # If linked to an assigned workout, mark it COMPLETED
         if session.assigned_workout:
@@ -169,10 +212,11 @@ class RoutineExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source='exercise.name', read_only=True)
     primary_muscle = serializers.CharField(source='exercise.primary_muscle.name', read_only=True)
     progression = serializers.SerializerMethodField()
+    swap = serializers.SerializerMethodField()
 
     class Meta:
         model = RoutineExercise
-        fields = ['id', 'exercise', 'exercise_name', 'primary_muscle', 'order', 'target_sets', 'target_reps', 'rest_seconds', 'target_rpe', 'suggested_weight_kg', 'focus', 'notes', 'progression']
+        fields = ['id', 'exercise', 'exercise_name', 'primary_muscle', 'order', 'target_sets', 'target_reps', 'rest_seconds', 'target_rpe', 'suggested_weight_kg', 'focus', 'notes', 'progression', 'swap']
 
     def get_progression(self, obj):
         request = self.context.get('request')
@@ -182,6 +226,31 @@ class RoutineExerciseSerializer(serializers.ModelSerializer):
         # each exercise's history once no matter how many days repeat it.
         cache = self.context.setdefault('_progression_history', {})
         return progression_for(request.user, obj, cache)
+
+    def get_swap(self, obj):
+        # Set by ProgramDaySerializer.to_representation for each day being rendered;
+        # absent when this serializer is used outside a program-day context (e.g. the
+        # routines list/editor), where no per-day override applies.
+        program_day_id = self.context.get('_current_program_day_id')
+        if not program_day_id:
+            return None
+        swap_map = self.context.setdefault('_swap_map', {})
+        if program_day_id not in swap_map:
+            swap_map[program_day_id] = {
+                s.routine_exercise_id: s
+                for s in ProgramDayExerciseSwap.objects.filter(
+                    program_day_id=program_day_id
+                ).select_related('replacement_exercise', 'replacement_exercise__primary_muscle')
+            }
+        swap = swap_map[program_day_id].get(obj.id)
+        if not swap:
+            return None
+        return {
+            'id': str(swap.id),
+            'exercise': str(swap.replacement_exercise_id),
+            'exercise_name': swap.replacement_exercise.name,
+            'primary_muscle': swap.replacement_exercise.primary_muscle.name if swap.replacement_exercise.primary_muscle_id else None,
+        }
 
 class RoutineSerializer(serializers.ModelSerializer):
     exercises = RoutineExerciseSerializer(many=True, required=False)
@@ -217,6 +286,12 @@ class ProgramDaySerializer(serializers.ModelSerializer):
     class Meta:
         model = ProgramDay
         fields = ['id', 'day_number', 'label', 'is_optional', 'status', 'routine', 'routine_details']
+
+    def to_representation(self, instance):
+        # Tells the nested RoutineExerciseSerializer which day it's rendering for, so it
+        # can look up this day's exercise swaps without changing the shared Routine template.
+        self.context['_current_program_day_id'] = instance.id
+        return super().to_representation(instance)
 
 class CardioEntrySerializer(serializers.ModelSerializer):
     class Meta:

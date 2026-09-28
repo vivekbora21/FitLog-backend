@@ -123,6 +123,25 @@ class ProgramDay(UUIDTimeStampedModel):
         constraints = [models.UniqueConstraint(fields=['program', 'day_number'], name='unique_program_day')]
         indexes = [models.Index(fields=['program', 'status'])]
 
+class ProgramDayExerciseSwap(UUIDTimeStampedModel):
+    """
+    A member's per-day override of a recommended RoutineExercise slot.
+    Scoped to one ProgramDay so other days sharing the same Routine are unaffected.
+    """
+    program_day = models.ForeignKey(ProgramDay, on_delete=models.CASCADE, related_name='exercise_swaps')
+    routine_exercise = models.ForeignKey(RoutineExercise, on_delete=models.CASCADE, related_name='swaps')
+    replacement_exercise = models.ForeignKey(
+        'exercises.Exercise', on_delete=models.CASCADE, related_name='swapped_into_program_days'
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['program_day', 'routine_exercise'], name='unique_program_day_exercise_swap')
+        ]
+
+    def __str__(self):
+        return f"Day {self.program_day.day_number}: {self.routine_exercise.exercise.name} -> {self.replacement_exercise.name}"
+
 class CardioEntry(UUIDTimeStampedModel):
     MODALITIES = [('TREADMILL', 'Treadmill'), ('CYCLING', 'Cycling'), ('CROSS_TRAINER', 'Cross Trainer'), ('ELLIPTICAL', 'Elliptical'), ('ROWING', 'Rowing'), ('OTHER', 'Other')]
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cardio_entries')
@@ -251,6 +270,14 @@ class WorkoutSet(UUIDTimeStampedModel):
     reps = models.PositiveIntegerField(default=0)
     rpe = models.FloatField(null=True, blank=True)
     completed = models.BooleanField(default=True)
+    duration_seconds = models.PositiveIntegerField(null=True, blank=True, help_text='Duration in seconds for cardio sets')
+    distance_km = models.FloatField(null=True, blank=True, help_text='Distance in km')
+    incline_percent = models.FloatField(null=True, blank=True, help_text='Incline percentage for treadmill/cardio')
+    speed_kmh = models.FloatField(null=True, blank=True, help_text='Speed in km/h')
+    resistance_level = models.PositiveSmallIntegerField(null=True, blank=True, help_text='Resistance level')
+    calories = models.PositiveIntegerField(null=True, blank=True, help_text='Estimated calories burned')
+    heart_rate = models.PositiveSmallIntegerField(null=True, blank=True, help_text='Average heart rate bpm')
+    intensity = models.CharField(max_length=40, blank=True, default='', help_text='Cardio intensity / zone')
 
     class Meta:
         ordering = ['set_number']
@@ -259,4 +286,8 @@ class WorkoutSet(UUIDTimeStampedModel):
         return round(self.weight_kg * self.reps, 1) if self.completed else 0.0
 
     def __str__(self):
+        if self.duration_seconds or self.incline_percent is not None or self.speed_kmh is not None:
+            mins = round((self.duration_seconds or 0) / 60, 1)
+            incline_str = f" @ {self.incline_percent}% inc" if self.incline_percent is not None else ""
+            return f"Interval {self.set_number}: {mins}min{incline_str}"
         return f"Set {self.set_number}: {self.weight_kg}kg x {self.reps} reps"

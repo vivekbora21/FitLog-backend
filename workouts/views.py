@@ -8,13 +8,13 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Count, Q
-from .models import Routine, AssignedWorkout, WorkoutSession, WorkoutExercise, JourneyProgram, ProgramDay, CardioEntry
+from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, WorkoutExercise, JourneyProgram, ProgramDay, CardioEntry, ProgramDayExerciseSwap
 from progress.records import recompute_personal_records
 from .serializers import RoutineSerializer, AssignedWorkoutSerializer, WorkoutSessionSerializer, ProgramDaySerializer, CardioEntrySerializer
+from exercises.models import Exercise
 from memberships.models import TrainerClientAssignment, GymMembership
 from progress.models import WeightEntry, BodyMeasurement, PersonalRecord
-from nutrition.models import NutritionDay
-from nutrition.targets import TargetTimeline
+from nutrition.targets import TargetTimeline, calculate_recommended_targets, get_or_create_macro_target
 from core.models import AuditLog
 from notifications.models import Notification
 from analytics.pacing import (
@@ -118,6 +118,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'id': str(row.exercise_id),
                 'name': row.exercise.name,
                 'primary_muscle_name': row.exercise.primary_muscle.name,
+                'primary_muscle_slug': row.exercise.primary_muscle.slug,
                 'last_date': row.session.started_at.date().isoformat(),
             })
             if len(out) >= 15:
@@ -191,6 +192,54 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 program.current_day = next_day.day_number
                 program.save(update_fields=['current_day', 'updated_at'])
         return Response({'success': True, 'day_number': day_number, 'status': new_status, 'current_day': program.current_day})
+
+    @action(detail=False, methods=['post'], url_path='swap-exercise')
+    def swap_exercise(self, request):
+        """
+        Replace one exercise on a specific program day with a different one, without
+        touching the shared Routine template (which other days may reuse). Sending the
+        day's own original exercise_id clears the swap and restores the recommendation.
+        """
+        user = request.user
+        day_number = request.data.get('day_number')
+        routine_exercise_id = request.data.get('routine_exercise_id')
+        new_exercise_id = request.data.get('exercise_id')
+        if not day_number or not routine_exercise_id or not new_exercise_id:
+            return Response(
+                {'error': 'day_number, routine_exercise_id and exercise_id are required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        program = JourneyProgram.objects.filter(user=user, active=True).first()
+        if not program:
+            return Response({'error': 'No active program.'}, status=status.HTTP_404_NOT_FOUND)
+
+        program_day = program.days.filter(day_number=int(day_number)).select_related('routine').first()
+        if not program_day:
+            return Response({'error': 'Program day not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        routine_exercise = RoutineExercise.objects.filter(
+            id=routine_exercise_id, routine_id=program_day.routine_id
+        ).first()
+        if not routine_exercise:
+            return Response({'error': "Exercise not found on this day's routine."}, status=status.HTTP_404_NOT_FOUND)
+
+        new_exercise = Exercise.objects.filter(id=new_exercise_id).first()
+        if not new_exercise:
+            return Response({'error': 'Replacement exercise not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if str(new_exercise.id) == str(routine_exercise.exercise_id):
+            ProgramDayExerciseSwap.objects.filter(program_day=program_day, routine_exercise=routine_exercise).delete()
+        else:
+            ProgramDayExerciseSwap.objects.update_or_create(
+                program_day=program_day, routine_exercise=routine_exercise,
+                defaults={'replacement_exercise': new_exercise}
+            )
+
+        day = program.days.filter(day_number=int(day_number)).select_related('routine').prefetch_related(
+            'routine__exercises__exercise', 'routine__exercises__exercise__primary_muscle'
+        ).first()
+        return Response(ProgramDaySerializer(day, context={'request': request}).data)
 
     @action(detail=False, methods=['get'], url_path='journey-history')
     def journey_history(self, request):
@@ -497,7 +546,6 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         focus_exercise = None
         focus_exercise_id = data.get('focus_exercise_id')
         if focus_exercise_id:
-            from exercises.models import Exercise
             focus_exercise = Exercise.objects.filter(id=focus_exercise_id).first()
 
         target_focus_1rm = None
@@ -565,6 +613,31 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             ))
 
         ProgramDay.objects.bulk_create(program_days)
+
+        # Recalibrate MacroTarget for the new plan mode (BULK vs CUT etc.)
+        rec = calculate_recommended_targets(user)
+        target = get_or_create_macro_target(user)
+        if rec.get('available'):
+            for field in ('daily_calories', 'protein_g', 'carbs_g', 'fat_g'):
+                setattr(target, field, rec[field])
+            target.save()
+        else:
+            if mode == 'BULK':
+                target.daily_calories = 2700
+                target.protein_g = 160
+                target.carbs_g = 330
+                target.fat_g = 80
+            elif mode == 'CUT':
+                target.daily_calories = 2160
+                target.protein_g = 175
+                target.carbs_g = 220
+                target.fat_g = 60
+            elif mode == 'RECOMP':
+                target.daily_calories = 2250
+                target.protein_g = 170
+                target.carbs_g = 240
+                target.fat_g = 65
+            target.save()
 
         pacing_data = calculate_journey_pacing(user, new_program)
 

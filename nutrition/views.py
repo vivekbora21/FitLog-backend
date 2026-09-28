@@ -28,10 +28,37 @@ class NutritionDayView(APIView):
         yesterday_day = NutritionDay.objects.filter(user=request.user, date=yesterday).first()
         yesterday_meals = MealEntrySerializer(yesterday_day.meals.all(), many=True).data if yesterday_day else []
 
+        program = JourneyProgram.objects.filter(user=request.user, active=True).first()
+        profile = getattr(request.user, 'profile', None)
+
+        mode = 'CUT'
+        if program and program.mode:
+            mode = program.mode
+        elif profile and profile.fitness_goal:
+            if profile.fitness_goal == 'FAT_LOSS':
+                mode = 'CUT'
+            elif profile.fitness_goal in ('HYPERTROPHY', 'STRENGTH'):
+                mode = 'BULK'
+            elif profile.fitness_goal in ('RECOMP',):
+                mode = 'RECOMP'
+            elif profile.fitness_goal in ('GENERAL_FITNESS', 'ENDURANCE'):
+                mode = 'MAINTAIN'
+
+        target_type = 'MAX' if mode == 'CUT' else ('MIN' if mode == 'BULK' else 'TARGET')
+        mode_label = dict(JourneyProgram.MODE_CHOICES).get(
+            mode, 'Cut Mode' if mode == 'CUT' else ('Bulk Mode' if mode == 'BULK' else mode.capitalize())
+        )
+
         return Response({
             'day': NutritionDaySerializer(day).data,
             'targets': MacroTargetSerializer(target).data,
             'yesterday_meals': yesterday_meals,
+            'plan': {
+                'mode': mode,
+                'mode_label': mode_label,
+                'target_type': target_type,
+                'program_name': program.name if program else None,
+            },
         })
 
     def patch(self, request, date_str=None):
@@ -292,6 +319,25 @@ class NutritionHistoryView(APIView):
 
         timeline = TargetTimeline(request.user)
         program = JourneyProgram.objects.filter(user=request.user, active=True).first()
+        profile = getattr(request.user, 'profile', None)
+
+        mode = 'CUT'
+        if program and program.mode:
+            mode = program.mode
+        elif profile and profile.fitness_goal:
+            if profile.fitness_goal == 'FAT_LOSS':
+                mode = 'CUT'
+            elif profile.fitness_goal in ('HYPERTROPHY', 'STRENGTH'):
+                mode = 'BULK'
+            elif profile.fitness_goal in ('RECOMP',):
+                mode = 'RECOMP'
+            elif profile.fitness_goal in ('GENERAL_FITNESS', 'ENDURANCE'):
+                mode = 'MAINTAIN'
+
+        target_type = 'MAX' if mode == 'CUT' else ('MIN' if mode == 'BULK' else 'TARGET')
+        mode_label = dict(JourneyProgram.MODE_CHOICES).get(
+            mode, 'Cut Mode' if mode == 'CUT' else ('Bulk Mode' if mode == 'BULK' else mode.capitalize())
+        )
 
         history_list = []
         for i in range(days):
@@ -336,6 +382,8 @@ class NutritionHistoryView(APIView):
                 'target_carbs': day_target.carbs_g,
                 'target_fat': day_target.fat_g,
                 'target_water': day_target.water_ml,
+                'target_type': target_type,
+                'mode': mode,
             })
 
         return Response({
@@ -345,5 +393,12 @@ class NutritionHistoryView(APIView):
                 'start_date': program.start_date.isoformat() if program and program.start_date else None,
                 'duration_days': program.duration_days if program else 30,
                 'name': program.name if program else 'Fitness Journey',
+                'mode': mode,
+                'target_type': target_type,
             } if program else None,
+            'plan': {
+                'mode': mode,
+                'mode_label': mode_label,
+                'target_type': target_type,
+            },
         })
