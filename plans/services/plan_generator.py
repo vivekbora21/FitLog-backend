@@ -212,20 +212,35 @@ def generate_roadmap(blueprint, user_inputs):
 
     scaled_phases = _scale_phases(blueprint.phases, blueprint.default_duration_days, duration_days)
 
-    weekday_set = set(weekdays) if weekdays else None
     workout_templates = blueprint.workout_templates or {}
+    # The blueprint's day_1..day_7 keys are just an ordered list of its own workout
+    # splits, not literal calendar weekdays. When the member picks a different weekday
+    # set (or a different days_per_week) than the blueprint's own default, matching by
+    # weekday number would leave some chosen training days without any of the
+    # blueprint's real content. Instead, spread the blueprint's actual non-empty splits
+    # across whichever weekdays are training days, cycling if there are more training
+    # days than splits.
+    ordered_splits = [workout_templates[f'day_{i}'] for i in range(1, 8) if workout_templates.get(f'day_{i}')]
+
+    if weekdays:
+        training_weekdays = sorted(set(weekdays))
+    else:
+        training_weekdays = [i for i in range(1, 8) if workout_templates.get(f'day_{i}')]
+
+    workout_by_weekday = {
+        wd: ordered_splits[idx % len(ordered_splits)]
+        for idx, wd in enumerate(training_weekdays)
+    } if ordered_splits else {}
 
     def is_training_weekday(weekday):
-        if weekday_set is not None:
-            return weekday in weekday_set
-        return bool(workout_templates.get(f'day_{weekday}'))
+        return weekday in training_weekdays
 
     days = []
     for day_number in range(1, duration_days + 1):
         weekday = ((day_number - 1) % 7) + 1
         is_training = is_training_weekday(weekday)
         is_rest = not is_training
-        workout = None if is_rest else workout_templates.get(f'day_{weekday}')
+        workout = None if is_rest else workout_by_weekday.get(weekday)
         phase_name = _phase_name_for_day(scaled_phases, day_number)
         targets = rest_day_targets if is_rest else training_day_targets
 

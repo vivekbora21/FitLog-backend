@@ -144,6 +144,21 @@ class GenerateRoadmapStubTests(TestCase):
         rest_flags = [d['is_rest'] for d in roadmap['days']]
         self.assertEqual(rest_flags, [False, True, False, True, False, True, True])
 
+    def test_chosen_weekdays_beyond_blueprint_split_count_still_get_a_workout(self):
+        # The stub blueprint only defines 3 real splits (day_1/day_3/day_5), but the
+        # member asked for 4 training days a week. Every chosen training day must still
+        # carry a real workout (cycling through the blueprint's splits), not a gap.
+        blueprint = make_blueprint_stub('CUT')
+        roadmap = generate_roadmap(
+            blueprint, self.user_inputs(duration_days=7, days_per_week=4, weekdays=[1, 2, 3, 6])
+        )
+        by_day = {d['day_number']: d for d in roadmap['days']}
+        for day_number in (1, 2, 3, 6):
+            self.assertFalse(by_day[day_number]['is_rest'])
+            self.assertIsNotNone(by_day[day_number]['workout'])
+        for day_number in (4, 5, 7):
+            self.assertTrue(by_day[day_number]['is_rest'])
+
 
 class BlueprintOrmTests(TestCase):
     def test_generate_roadmap_against_real_blueprint(self):
