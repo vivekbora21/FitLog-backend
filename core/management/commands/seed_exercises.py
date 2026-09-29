@@ -48,6 +48,7 @@ EQUIPMENT_TYPES = [
     ("EZ-Bar", "ez-bar"),
     ("Smith Machine", "smith-machine"),
     ("Cardio Equipment", "cardio-equipment"),
+    ("Medicine Ball", "medicine-ball"),
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1101,12 +1102,411 @@ EXERCISES = [
         "Hold band wide, pass it overhead and behind back in a smooth arc. "
         "Shoulder mobility and rotator cuff warm-up."
     ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL CHEST
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Cable Crossover",
+        "cable-crossover",
+        "chest", "cable",
+        "Stand centered between two high pulleys. Pull handles down and across "
+        "body in an arc, crossing hands at bottom. Squeeze pecs at full contraction."
+    ),
+    (
+        "Floor Press",
+        "floor-press",
+        "chest", "barbell",
+        "Lie on the floor, lower bar until upper arms touch ground, then press up. "
+        "Limits ROM to protect shoulders and emphasizes lockout triceps/chest."
+    ),
+    (
+        "Svend Press",
+        "svend-press",
+        "chest", "bodyweight",
+        "Press a weight plate between both palms at chest height, extend arms forward "
+        "while squeezing plate. Constant inner-pec tension."
+    ),
+    (
+        "Wide Push-Up",
+        "wide-push-up",
+        "chest", "bodyweight",
+        "Hands set wider than shoulder width. Lower chest to floor, press back up. "
+        "Increases outer chest recruitment versus standard push-up."
+    ),
+    (
+        "Archer Push-Up",
+        "archer-push-up",
+        "chest", "bodyweight",
+        "Wide hand position, shift weight to one side while the other arm stays straight. "
+        "Alternate sides. Advanced unilateral chest and triceps strength."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL BACK
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Deficit Deadlift",
+        "deficit-deadlift",
+        "back", "barbell",
+        "Stand on a small platform (1-3 inches) to increase the pull's range of motion. "
+        "Same mechanics as conventional deadlift with a deeper starting position."
+    ),
+    (
+        "Landmine Row",
+        "landmine-row",
+        "back", "barbell",
+        "Straddle or stand alongside a barbell anchored in a landmine attachment. "
+        "Row the free end to the torso, squeezing shoulder blades together."
+    ),
+    (
+        "Meadows Row",
+        "meadows-row",
+        "back", "barbell",
+        "Stand perpendicular to a landmine barbell, hinge forward, and row the end "
+        "up and back with a single arm. Great unilateral lat/rhomboid stretch."
+    ),
+    (
+        "Smith Machine Row",
+        "smith-machine-row",
+        "back", "smith-machine",
+        "Set bar to knee height, hinge forward with fixed bar path. "
+        "Row bar to lower ribcage, squeezing scapulae together."
+    ),
+    (
+        "Renegade Row",
+        "renegade-row",
+        "back", "dumbbell",
+        "Hold plank position with hands on dumbbells. Row one dumbbell to hip "
+        "while stabilizing with the other arm. Alternate sides."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL SHOULDERS
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Push Press",
+        "push-press",
+        "shoulders", "barbell",
+        "Dip slightly at knees, drive legs explosively to help press bar overhead. "
+        "Allows heavier loads than strict press by using leg drive."
+    ),
+    (
+        "Z Press",
+        "z-press",
+        "shoulders", "barbell",
+        "Sit on floor with legs extended straight, no back support. "
+        "Press bar overhead strictly. Demands strict posture and core stability."
+    ),
+    (
+        "Landmine Press",
+        "landmine-press",
+        "shoulders", "barbell",
+        "Hold landmine barbell end at shoulder, press up and slightly forward "
+        "along its natural arc. Shoulder-friendly pressing angle."
+    ),
+    (
+        "Smith Machine Shoulder Press",
+        "smith-machine-shoulder-press",
+        "shoulders", "smith-machine",
+        "Sit on bench under Smith bar at shoulder height. Press up along the fixed "
+        "path to lockout. Stable pressing without stabilizer demand."
+    ),
+    (
+        "Machine Lateral Raise",
+        "machine-lateral-raise",
+        "shoulders", "machine",
+        "Sit in lateral raise machine, pads against outer arms. "
+        "Raise arms out to shoulder height under constant machine resistance."
+    ),
+    (
+        "Cable Rear Delt Fly",
+        "cable-rear-delt-fly",
+        "shoulders", "cable",
+        "Cross cables in front of body at chest height. Pull handles out and back "
+        "in a reverse fly motion, squeezing rear delts."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL BICEPS / FOREARMS
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Machine Preacher Curl",
+        "machine-preacher-curl",
+        "biceps", "machine",
+        "Sit with upper arms on preacher pad, grip handles. Curl through full ROM "
+        "with machine-guided resistance. Removes momentum entirely."
+    ),
+    (
+        "Zottman Curl",
+        "zottman-curl",
+        "biceps", "dumbbell",
+        "Curl dumbbells up with supinated grip, rotate to pronated grip at top, "
+        "lower with control. Builds biceps and brachioradialis."
+    ),
+    (
+        "Reverse Barbell Curl",
+        "reverse-barbell-curl",
+        "forearms", "barbell",
+        "Overhand (pronated) grip on barbell. Curl up keeping elbows pinned. "
+        "Targets brachioradialis and forearm extensors."
+    ),
+    (
+        "Wrist Roller",
+        "wrist-roller",
+        "forearms", "bodyweight",
+        "Hold roller device with weight suspended by a rope. Roll wrists forward "
+        "and backward to wind/unwind the rope. Intense grip and forearm burnout."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL TRICEPS
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Bench Dip",
+        "bench-dip",
+        "triceps", "bodyweight",
+        "Hands on bench edge behind body, legs extended forward. "
+        "Lower hips toward floor by bending elbows, press back up."
+    ),
+    (
+        "JM Press",
+        "jm-press",
+        "triceps", "barbell",
+        "Hybrid of close-grip bench and skull crusher. Lower bar toward neck/chin "
+        "with elbows tucked, press to lockout. Heavy triceps builder."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL QUADRICEPS
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Box Squat",
+        "box-squat",
+        "quadriceps", "barbell",
+        "Squat down to lightly touch a box or bench at depth, then drive back up. "
+        "Teaches depth consistency and posterior chain engagement out of the hole."
+    ),
+    (
+        "Zercher Squat",
+        "zercher-squat",
+        "quadriceps", "barbell",
+        "Cradle bar in the crooks of both elbows against torso. Squat to depth "
+        "keeping torso upright. Heavy core and upper-back demand."
+    ),
+    (
+        "Barbell Lunge",
+        "barbell-lunge",
+        "quadriceps", "barbell",
+        "Bar across upper back as in a squat. Step forward into a lunge, "
+        "drive back to standing. Alternate legs or complete one side at a time."
+    ),
+    (
+        "Reverse Lunge",
+        "reverse-lunge",
+        "quadriceps", "dumbbell",
+        "Step backward into a lunge position, lowering rear knee toward floor. "
+        "Drive through front heel to return to standing. Easier on knees than forward lunge."
+    ),
+    (
+        "Lateral Lunge",
+        "lateral-lunge",
+        "quadriceps", "dumbbell",
+        "Step wide to one side, sitting hips back and bending that knee "
+        "while the other leg stays straight. Push back to center. Targets inner/outer thigh."
+    ),
+    (
+        "Pistol Squat",
+        "pistol-squat",
+        "quadriceps", "bodyweight",
+        "Single-leg squat with the non-working leg extended forward. "
+        "Descend to full depth and stand back up. Advanced strength and balance."
+    ),
+    (
+        "Wall Sit",
+        "wall-sit",
+        "quadriceps", "bodyweight",
+        "Back flat against wall, knees at 90°, thighs parallel to floor. "
+        "Hold the isometric position for time. Builds quad endurance."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL HAMSTRINGS
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Stiff-Leg Deadlift",
+        "stiff-leg-deadlift",
+        "hamstrings", "barbell",
+        "Similar to RDL but with knees nearly locked throughout. "
+        "Hinge at hips, lower bar along shins to deep hamstring stretch, then return."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL GLUTES
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Hip Abduction Machine",
+        "hip-abduction-machine",
+        "glutes", "machine",
+        "Sit in machine with pads against outer thighs. Push legs apart against "
+        "resistance, squeezing glute medius. Control the return."
+    ),
+    (
+        "Hip Adduction Machine",
+        "hip-adduction-machine",
+        "glutes", "machine",
+        "Sit in machine with pads against inner thighs. Squeeze legs together "
+        "against resistance. Targets adductors and inner thigh."
+    ),
+    (
+        "Glute Kickback Machine",
+        "glute-kickback-machine",
+        "glutes", "machine",
+        "Stand at machine with pad behind one leg. Extend leg backward against "
+        "resistance, squeezing glute at full extension. Alternate legs."
+    ),
+    (
+        "Curtsy Lunge",
+        "curtsy-lunge",
+        "glutes", "dumbbell",
+        "Step one leg diagonally behind and across the other, bending both knees. "
+        "Drive back to standing. Targets glute medius and outer glutes."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL CALVES
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Calf Press on Leg Press",
+        "calf-press-leg-press",
+        "calves", "machine",
+        "Sit in leg press machine, place balls of feet on lower platform edge. "
+        "Extend and flex ankles through full range of motion."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL CORE
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Reverse Crunch",
+        "reverse-crunch",
+        "core", "bodyweight",
+        "Lie on back, knees bent. Curl hips up toward chest, lifting tailbone "
+        "off floor. Lower with control. Emphasizes lower abs."
+    ),
+    (
+        "Hollow Body Hold",
+        "hollow-body-hold",
+        "core", "bodyweight",
+        "Lie on back, press lower back into floor, raise shoulders and legs slightly. "
+        "Hold the dish shape for time. Foundational gymnastics core strength."
+    ),
+    (
+        "Toes to Bar",
+        "toes-to-bar",
+        "core", "bodyweight",
+        "Hang from pull-up bar. Raise straight legs explosively until toes touch bar, "
+        "lower with control. Advanced hanging core movement."
+    ),
+    (
+        "Medicine Ball Slam",
+        "medicine-ball-slam",
+        "core", "medicine-ball",
+        "Raise medicine ball overhead, slam it forcefully to the ground while "
+        "crunching torso down. Reset and repeat. Explosive core and conditioning."
+    ),
+    (
+        "Wall Ball Shot",
+        "wall-ball-shot",
+        "quadriceps", "medicine-ball",
+        "Hold medicine ball at chest, squat to depth, then stand and throw ball "
+        "against a wall target overhead. Catch and repeat. Full-body conditioning."
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL CARDIO
+    # ═══════════════════════════════════════════════════════════════════════════
+    (
+        "Ski Erg",
+        "ski-erg",
+        "cardio", "cardio-equipment",
+        "Pull both handles down and back in a skiing motion, hinging at hips. "
+        "Full-body pulling cardio, low-impact on joints."
+    ),
+    (
+        "Sled Drag (Backward)",
+        "sled-drag-backward",
+        "cardio", "machine",
+        "Attach straps to loaded sled, walk backward pulling it toward you. "
+        "Heavy quad and knee-stability conditioning work."
+    ),
 ]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Calorie-impact data (Metabolic Equivalent of Task, from the Compendium of
+# Physical Activities). Cardio varies too much by modality to bucket, so each
+# cardio exercise gets an explicit MET; strength/core work is bucketed by
+# movement type since intensity is far more uniform within those buckets.
+# ──────────────────────────────────────────────────────────────────────────────
+
+CARDIO_MET = {
+    "treadmill-running": 9.8,
+    "incline-treadmill-walk": 6.0,
+    "elliptical-trainer": 5.0,
+    "stationary-bike": 7.0,
+    "rowing-machine": 7.0,
+    "stairmaster": 9.0,
+    "assault-air-bike": 11.0,
+    "jump-rope": 11.0,
+    "sled-push": 8.0,
+    "box-jump": 8.0,
+    "sprints": 15.0,
+    "ski-erg": 7.0,
+    "sled-drag-backward": 8.0,
+}
+
+# Explicit overrides for heavy compound barbell lifts (higher exertion than
+# the general strength-training bucket below).
+COMPOUND_LIFT_SLUGS = {
+    "barbell-bench-press", "incline-barbell-bench-press", "decline-barbell-bench-press",
+    "conventional-deadlift", "sumo-deadlift", "deficit-deadlift", "rack-pull",
+    "barbell-back-squat", "barbell-front-squat", "box-squat", "zercher-squat",
+    "overhead-barbell-press", "push-press", "z-press",
+    "barbell-bent-over-row", "pendlay-row",
+    "romanian-deadlift", "good-morning", "stiff-leg-deadlift",
+    "barbell-clean-and-press", "barbell-thruster", "burpee", "battle-rope-slam",
+    "kettlebell-swing", "turkish-get-up",
+}
+
+STRETCH_MOBILITY_SLUGS = {
+    "foam-rolling", "band-pull-apart", "band-face-pull", "band-dislocate",
+}
+
+BODYWEIGHT_CORE_SLUGS = {
+    "plank", "side-plank", "hollow-body-hold", "l-sit-hold", "wall-sit", "dead-bug",
+}
+
+
+def estimate_met(slug, muscle_slug, equip_slug):
+    if slug in CARDIO_MET:
+        return CARDIO_MET[slug]
+    if slug in COMPOUND_LIFT_SLUGS:
+        return 6.0
+    if slug in STRETCH_MOBILITY_SLUGS:
+        return 2.5
+    if slug in BODYWEIGHT_CORE_SLUGS:
+        return 3.0
+    if equip_slug == "bodyweight":
+        return 3.8 if muscle_slug == "core" else 8.0
+    if muscle_slug in ("biceps", "triceps", "forearms"):
+        return 3.5
+    # General resistance-training bucket (moderate effort, non-compound).
+    return 5.0
 
 
 class Command(BaseCommand):
     help = (
-        "Seeds the global exercise catalog with 150+ real-world exercises, "
+        "Seeds the global exercise catalog with 180+ real-world exercises, "
         "muscle groups, and equipment types. Idempotent."
     )
 
@@ -1149,7 +1549,8 @@ class Command(BaseCommand):
         created_count = 0
         skipped_count = 0
         for name, slug, muscle_slug, equip_slug, instructions in EXERCISES:
-            _, created = Exercise.objects.get_or_create(
+            met_value = estimate_met(slug, muscle_slug, equip_slug)
+            _, created = Exercise.objects.update_or_create(
                 slug=slug,
                 gym=None,  # Global catalog
                 defaults={
@@ -1157,6 +1558,7 @@ class Command(BaseCommand):
                     "primary_muscle": muscles[muscle_slug],
                     "equipment": equipments[equip_slug],
                     "instructions": instructions,
+                    "met_value": met_value,
                 },
             )
             if created:

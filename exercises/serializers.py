@@ -27,7 +27,7 @@ class ExerciseSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'slug', 'gym', 'gym_name', 'primary_muscle', 'primary_muscle_name',
             'primary_muscle_slug', 'secondary_muscles', 'equipment', 'equipment_name', 'instructions',
-            'video_url', 'is_global', 'is_custom'
+            'video_url', 'met_value', 'is_global', 'is_custom'
         ]
         read_only_fields = ['gym']
 

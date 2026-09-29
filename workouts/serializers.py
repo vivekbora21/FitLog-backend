@@ -35,13 +35,14 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     gym_name = serializers.CharField(source='gym.name', read_only=True)
     total_volume_kg = serializers.FloatField(read_only=True)
+    total_calories = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = WorkoutSession
         fields = [
             'id', 'user', 'user_email', 'user_name', 'gym', 'gym_name', 'assigned_workout',
             'routine', 'title', 'started_at', 'completed_at', 'duration_seconds',
-            'overall_rpe', 'notes', 'exercises', 'total_volume_kg', 'created_at'
+            'overall_rpe', 'notes', 'exercises', 'total_volume_kg', 'total_calories', 'created_at'
         ]
         read_only_fields = ['user', 'created_at']
 
@@ -211,12 +212,13 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 class RoutineExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source='exercise.name', read_only=True)
     primary_muscle = serializers.CharField(source='exercise.primary_muscle.name', read_only=True)
+    met_value = serializers.FloatField(source='exercise.met_value', read_only=True)
     progression = serializers.SerializerMethodField()
     swap = serializers.SerializerMethodField()
 
     class Meta:
         model = RoutineExercise
-        fields = ['id', 'exercise', 'exercise_name', 'primary_muscle', 'order', 'target_sets', 'target_reps', 'rest_seconds', 'target_rpe', 'suggested_weight_kg', 'focus', 'notes', 'progression', 'swap']
+        fields = ['id', 'exercise', 'exercise_name', 'primary_muscle', 'met_value', 'order', 'target_sets', 'target_reps', 'rest_seconds', 'target_rpe', 'suggested_weight_kg', 'focus', 'notes', 'progression', 'swap']
 
     def get_progression(self, obj):
         request = self.context.get('request')
@@ -250,6 +252,7 @@ class RoutineExerciseSerializer(serializers.ModelSerializer):
             'exercise': str(swap.replacement_exercise_id),
             'exercise_name': swap.replacement_exercise.name,
             'primary_muscle': swap.replacement_exercise.primary_muscle.name if swap.replacement_exercise.primary_muscle_id else None,
+            'met_value': swap.replacement_exercise.met_value,
         }
 
 class RoutineSerializer(serializers.ModelSerializer):

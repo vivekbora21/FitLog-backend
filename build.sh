@@ -11,5 +11,4 @@ if [ "${SEED_ON_BUILD:-true}" = "true" ]; then
     echo "==> Seeding database..."
     python manage.py seed_exercises
     python manage.py seed_fitlog_data
-    python manage.py seed_vivek_journey
 fi

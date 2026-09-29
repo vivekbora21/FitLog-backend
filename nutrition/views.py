@@ -386,8 +386,12 @@ class NutritionHistoryView(APIView):
                 'mode': mode,
             })
 
+        # Calculate weekly nutrition summaries (Monday-Sunday weeks)
+        weeks = build_weekly_nutrition_summaries(history_list, today, mode, target_type)
+
         return Response({
             'history': history_list,
+            'weeks': weeks,
             'targets': MacroTargetSerializer(timeline.current).data,
             'program': {
                 'start_date': program.start_date.isoformat() if program and program.start_date else None,
@@ -402,3 +406,130 @@ class NutritionHistoryView(APIView):
                 'target_type': target_type,
             },
         })
+
+
+def build_weekly_nutrition_summaries(history_list, today, mode, target_type):
+    history_by_date = {item['date']: item for item in history_list}
+    current_monday = today - timedelta(days=today.weekday())
+    earliest_date_str = history_list[-1]['date'] if history_list else today.isoformat()
+    earliest_date = date.fromisoformat(earliest_date_str)
+    earliest_monday = earliest_date - timedelta(days=earliest_date.weekday())
+
+    weeks = []
+    w_monday = current_monday
+    week_idx = 0
+
+    while w_monday >= earliest_monday:
+        w_sunday = w_monday + timedelta(days=6)
+        days_in_week = []
+        for i in range(7):
+            d = w_monday + timedelta(days=i)
+            d_str = d.isoformat()
+            hist_item = history_by_date.get(d_str)
+            is_future = d > today
+            is_today = d == today
+
+            if hist_item:
+                days_in_week.append({
+                    'date': d_str,
+                    'weekday': d.strftime('%a'),
+                    'day_number': d.day,
+                    'total_calories': hist_item['total_calories'],
+                    'total_protein': hist_item['total_protein'],
+                    'total_carbs': hist_item['total_carbs'],
+                    'total_fat': hist_item['total_fat'],
+                    'water_consumed_ml': hist_item['water_consumed_ml'],
+                    'has_logged': hist_item['has_logged'],
+                    'is_today': is_today,
+                    'is_future': is_future,
+                    'target_calories': hist_item['target_calories'],
+                })
+            else:
+                days_in_week.append({
+                    'date': d_str,
+                    'weekday': d.strftime('%a'),
+                    'day_number': d.day,
+                    'total_calories': 0,
+                    'total_protein': 0.0,
+                    'total_carbs': 0.0,
+                    'total_fat': 0.0,
+                    'water_consumed_ml': 0,
+                    'has_logged': False,
+                    'is_today': is_today,
+                    'is_future': is_future,
+                    'target_calories': 2200,
+                })
+
+        logged_days = [d for d in days_in_week if d['has_logged']]
+        logged_count = len(logged_days)
+
+        avg_calories = round(sum(d['total_calories'] for d in logged_days) / logged_count) if logged_count > 0 else 0
+        avg_protein = round(sum(d['total_protein'] for d in logged_days) / logged_count, 1) if logged_count > 0 else 0.0
+        avg_carbs = round(sum(d['total_carbs'] for d in logged_days) / logged_count, 1) if logged_count > 0 else 0.0
+        avg_fat = round(sum(d['total_fat'] for d in logged_days) / logged_count, 1) if logged_count > 0 else 0.0
+        avg_water_ml = round(sum(d['water_consumed_ml'] for d in logged_days) / logged_count) if logged_count > 0 else 0
+
+        first_day_hist = next((history_by_date.get((w_monday + timedelta(days=i)).isoformat()) for i in range(7) if (w_monday + timedelta(days=i)).isoformat() in history_by_date), None)
+        t_cal = first_day_hist['target_calories'] if first_day_hist else 2200
+        t_pro = first_day_hist['target_protein'] if first_day_hist else 160
+        t_carb = first_day_hist['target_carbs'] if first_day_hist else 240
+        t_fat = first_day_hist['target_fat'] if first_day_hist else 65
+        t_water = first_day_hist['target_water'] if first_day_hist else 2500
+
+        cal_diff = avg_calories - t_cal if logged_count > 0 else 0
+        net_calorie_diff = cal_diff * logged_count
+
+        cal_adherence = round((avg_calories / max(1, t_cal)) * 100) if logged_count > 0 else 0
+        pro_adherence = round((avg_protein / max(1, t_pro)) * 100) if logged_count > 0 else 0
+        adherence_rate = round((logged_count / 7) * 100)
+
+        if week_idx == 0:
+            label = "This Week"
+        elif week_idx == 1:
+            label = "Last Week"
+        else:
+            label = f"{w_monday.strftime('%b %d')} – {w_sunday.strftime('%b %d')}"
+
+        if logged_count == 0:
+            copilot_insight = "No meals logged yet for this week. Start logging your fuel to track weekly averages."
+        elif mode == 'CUT':
+            if avg_calories <= t_cal:
+                copilot_insight = f"Weekly avg {avg_calories:,} kcal is {abs(cal_diff):,} kcal below your {t_cal:,} kcal ceiling. Deficit on track across {logged_count} logged day{'s' if logged_count > 1 else ''}!"
+            else:
+                copilot_insight = f"Weekly avg {avg_calories:,} kcal is {cal_diff:,} kcal above deficit ceiling. Aim to tighten remaining days to protect your deficit."
+        elif mode == 'BULK':
+            if avg_calories >= t_cal:
+                copilot_insight = f"Weekly avg {avg_calories:,} kcal meets your {t_cal:,} kcal surplus floor. Growth targets hit across {logged_count} day{'s' if logged_count > 1 else ''}!"
+            else:
+                copilot_insight = f"Weekly avg {avg_calories:,} kcal is {abs(cal_diff):,} kcal below your minimum floor. Lift intake to sustain muscle hypertrophy."
+        else:
+            copilot_insight = f"Weekly avg {avg_calories:,} kcal ({cal_adherence}% of target) with {avg_protein}g protein across {logged_count}/7 logged days."
+
+        weeks.append({
+            'week_start': w_monday.isoformat(),
+            'week_end': w_sunday.isoformat(),
+            'label': label,
+            'logged_count': logged_count,
+            'total_days': 7,
+            'avg_calories': avg_calories,
+            'avg_protein': avg_protein,
+            'avg_carbs': avg_carbs,
+            'avg_fat': avg_fat,
+            'avg_water_ml': avg_water_ml,
+            'target_calories': t_cal,
+            'target_protein': t_pro,
+            'target_carbs': t_carb,
+            'target_fat': t_fat,
+            'target_water': t_water,
+            'net_calorie_diff': net_calorie_diff,
+            'calorie_adherence_pct': cal_adherence,
+            'protein_adherence_pct': pro_adherence,
+            'adherence_rate_pct': adherence_rate,
+            'copilot_insight': copilot_insight,
+            'days': days_in_week,
+        })
+
+        w_monday -= timedelta(days=7)
+        week_idx += 1
+
+    return weeks

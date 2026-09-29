@@ -380,3 +380,15 @@ class NutritionHistoryViewTests(TestCase):
         self.assertFalse(empty_entry['has_logged'])
         self.assertEqual(empty_entry['total_calories'], 0)
         self.assertEqual(empty_entry['program_day_number'], 9)
+
+        # Weekly summaries
+        self.assertIn('weeks', data)
+        self.assertTrue(len(data['weeks']) >= 1)
+        this_week = data['weeks'][0]
+        self.assertEqual(this_week['label'], 'This Week')
+        self.assertEqual(this_week['total_days'], 7)
+        self.assertEqual(len(this_week['days']), 7)
+        self.assertTrue(this_week['logged_count'] >= 1)
+        self.assertEqual(this_week['avg_calories'], 450)
+        self.assertEqual(this_week['avg_protein'], 35.0)
+        self.assertIn('copilot_insight', this_week)

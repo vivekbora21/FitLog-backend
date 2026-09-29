@@ -239,6 +239,14 @@ class WorkoutSession(UUIDTimeStampedModel):
                 total += (s.weight_kg * s.reps)
         return round(total, 1)
 
+    def total_calories(self):
+        total = 0
+        for we in self.exercises.all():
+            for s in we.sets.filter(completed=True):
+                if s.calories:
+                    total += s.calories
+        return total or None
+
     def __str__(self):
         return f"{self.title} - {self.user.email} ({self.started_at.strftime('%Y-%m-%d')})"
 

@@ -54,6 +54,9 @@ class Exercise(UUIDTimeStampedModel):
     )
     instructions = models.TextField(blank=True, default='')
     video_url = models.URLField(max_length=500, blank=True, null=True)
+    # Metabolic Equivalent of Task (Compendium of Physical Activities). Used to
+    # estimate calories burned from a logged set/session duration.
+    met_value = models.FloatField(null=True, blank=True)
 
     class Meta:
         ordering = ['name']
@@ -66,6 +69,13 @@ class Exercise(UUIDTimeStampedModel):
 
     def is_global(self):
         return self.gym is None and self.created_by_id is None
+
+    def estimated_calories_burned(self, weight_kg, duration_minutes):
+        """Calories = MET * weight (kg) * duration (hours). Returns None if
+        no MET value is set for this exercise."""
+        if self.met_value is None:
+            return None
+        return round(self.met_value * weight_kg * (duration_minutes / 60), 1)
 
     def __str__(self):
         prefix = f"[{self.gym.name}] " if self.gym else ""
