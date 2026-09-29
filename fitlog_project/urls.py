@@ -16,6 +16,7 @@ from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalR
 from notifications.views import NotificationViewSet
 from core.views import AuditLogViewSet
 from analytics.views import DashboardStatsView, JourneyPacingStatusView, CalendarDayStatusView
+from plans.views import PlanViewSet
 
 router = DefaultRouter()
 router.register(r'gyms', GymViewSet, basename='gym')
@@ -37,6 +38,7 @@ router.register(r'progress/prs', PersonalRecordViewSet, basename='pr')
 router.register(r'progress/daily', DailyLogViewSet, basename='daily-log')
 router.register(r'notifications', NotificationViewSet, basename='notification')
 router.register(r'audit-logs', AuditLogViewSet, basename='audit-log')
+router.register(r'plans', PlanViewSet, basename='plan')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

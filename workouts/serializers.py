@@ -285,7 +285,10 @@ class ProgramDaySerializer(serializers.ModelSerializer):
     routine_details = RoutineSerializer(source='routine', read_only=True)
     class Meta:
         model = ProgramDay
-        fields = ['id', 'day_number', 'label', 'is_optional', 'status', 'routine', 'routine_details']
+        fields = [
+            'id', 'day_number', 'label', 'is_optional', 'status', 'routine', 'routine_details',
+            'workout_payload', 'meal_payload', 'macro_targets', 'expected_weight_kg',
+        ]
 
     def to_representation(self, instance):
         # Tells the nested RoutineExerciseSerializer which day it's rendering for, so it

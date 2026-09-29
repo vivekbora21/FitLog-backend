@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'memberships.apps.MembershipsConfig',
     'exercises.apps.ExercisesConfig',
     'workouts.apps.WorkoutsConfig',
+    'plans.apps.PlansConfig',
     'nutrition.apps.NutritionConfig',
     'progress.apps.ProgressConfig',
     'notifications.apps.NotificationsConfig',

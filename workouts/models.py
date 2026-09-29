@@ -118,6 +118,10 @@ class ProgramDay(UUIDTimeStampedModel):
     is_optional = models.BooleanField(default=False)
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='UPCOMING')
     completed_session = models.OneToOneField('WorkoutSession', null=True, blank=True, on_delete=models.SET_NULL, related_name='program_day_completion')
+    workout_payload = models.JSONField(null=True, blank=True)
+    meal_payload = models.JSONField(null=True, blank=True)
+    macro_targets = models.JSONField(null=True, blank=True)
+    expected_weight_kg = models.FloatField(null=True, blank=True)
     class Meta:
         ordering = ['day_number']
         constraints = [models.UniqueConstraint(fields=['program', 'day_number'], name='unique_program_day')]
