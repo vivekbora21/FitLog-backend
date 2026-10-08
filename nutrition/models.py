@@ -18,10 +18,13 @@ class TargetValues(models.Model):
     # Null means "follow the active plan" (its scheduled days / cardio phase).
     weekly_workouts = models.PositiveSmallIntegerField(null=True, blank=True)
     weekly_cardio_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Null means "follow the suggested default" (see plan_weekly_calories_burned()).
+    weekly_calories_burned = models.PositiveIntegerField(null=True, blank=True)
 
     FIELDS = (
         'daily_calories', 'protein_g', 'carbs_g', 'fat_g', 'water_ml',
         'daily_steps', 'sleep_hours', 'weekly_workouts', 'weekly_cardio_minutes',
+        'weekly_calories_burned',
     )
 
     class Meta:

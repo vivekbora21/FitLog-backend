@@ -6,7 +6,7 @@ from django.db import models
 from workouts.models import WorkoutSession, AssignedWorkout, CardioEntry, JourneyProgram, ProgramDay
 from nutrition.defaults import DEFAULT_MACRO_TARGETS
 from nutrition.models import NutritionDay
-from nutrition.targets import TargetTimeline, weekly_cardio_target, weekly_workouts_target as resolve_weekly_workouts
+from nutrition.targets import TargetTimeline, weekly_cardio_target, weekly_calories_burned_target, weekly_workouts_target as resolve_weekly_workouts
 from progress.models import PersonalRecord, WeightEntry, BodyMeasurement, DailyLog
 from .pacing import calculate_journey_pacing, calculate_rolling_average
 from .weekly_health import build_weekly_health
@@ -31,21 +31,15 @@ class DashboardStatsView(APIView):
         week_sessions = user_sessions.filter(started_at__date__gte=start_of_week)
         total_volume_week = sum(s.total_volume_kg() for s in week_sessions)
 
-        # Activity heatmap: session dates in last 90 days
+        # Activity heatmap: session and cardio dates in last 90 days
         recent_sessions = user_sessions.filter(started_at__date__gte=ninety_days_ago)
         activity_dates = {}
         for s in recent_sessions:
             d_str = s.started_at.strftime('%Y-%m-%d')
             activity_dates[d_str] = activity_dates.get(d_str, 0) + 1
-
-        # Current streak calculation (consecutive days backwards from today/yesterday)
-        streak = 0
-        check_date = today
-        if not activity_dates.get(check_date.strftime('%Y-%m-%d')):
-            check_date = today - timedelta(days=1)
-        while activity_dates.get(check_date.strftime('%Y-%m-%d')):
-            streak += 1
-            check_date -= timedelta(days=1)
+        for c in CardioEntry.objects.filter(user=user, date__gte=ninety_days_ago, completed=True):
+            d_str = c.date.strftime('%Y-%m-%d')
+            activity_dates[d_str] = activity_dates.get(d_str, 0) + 1
 
         # Today's nutrition & daily lifestyle log
         nutrition_day = NutritionDay.objects.filter(user=user, date=today).first()
@@ -107,6 +101,8 @@ class DashboardStatsView(APIView):
         cardio_minutes = sum(CardioEntry.objects.filter(user=user, date__gte=start_of_week, completed=True).values_list('duration_minutes', flat=True))
         program = JourneyProgram.objects.filter(user=user, active=True).first()
         target_cardio = weekly_cardio_target(target, program)
+        calories_burned_week = sum(s.total_calories() or 0 for s in week_sessions)
+        target_calories_burned = weekly_calories_burned_target(target)
 
         # Trend Series for Dashboard Charts
         measurement_waist_by_date = {m.date: m.waist_cm for m in measurements if m.waist_cm is not None}
@@ -148,6 +144,19 @@ class DashboardStatsView(APIView):
                 'calories_target': timeline.on(d).daily_calories,
                 'protein': nutrition_days_map[d].total_protein() if d in nutrition_days_map else 0,
                 'protein_target': timeline.on(d).protein_g,
+            }
+            for d in last_7_days
+        ]
+
+        calories_burned_by_day = {}
+        for s in user_sessions.filter(started_at__date__gte=last_7_days[0]).prefetch_related('exercises__sets'):
+            d = s.started_at.date()
+            calories_burned_by_day[d] = calories_burned_by_day.get(d, 0) + (s.total_calories() or 0)
+        calories_burned_trend = [
+            {
+                'date': d.strftime('%Y-%m-%d'),
+                'label': d.strftime('%a'),
+                'calories_burned': calories_burned_by_day.get(d, 0),
             }
             for d in last_7_days
         ]
@@ -222,6 +231,13 @@ class DashboardStatsView(APIView):
                 'target': target_cardio,
                 'percent': cardio_pct,
                 'unit': 'min',
+            },
+            'calories_burned': {
+                'label': 'Calories Burned',
+                'actual': calories_burned_week,
+                'target': target_calories_burned,
+                'percent': min(100.0, round((calories_burned_week / max(1, target_calories_burned)) * 100.0, 1)) if target_calories_burned else 0.0,
+                'unit': 'kcal',
             },
             'steps': {
                 'label': 'Daily Steps',
@@ -363,10 +379,82 @@ class DashboardStatsView(APIView):
                     'routine_id': str(pd.routine_id) if pd.routine_id else None,
                     'routine_name': pd.routine.name if pd.routine else '',
                     'status': pd.status,
+                    'calendar_date': (program.start_date + timedelta(days=pd.day_number - 1)).isoformat(),
                     'is_optional': pd.is_optional,
                 } if pd else None,
             }
             curr_d += timedelta(days=1)
+
+        # Resilient streak calculation: counts active engagement days and preserves streaks across scheduled rest days
+        weight_date_strs = {w.date.strftime('%Y-%m-%d') for w in weights}
+        cardio_date_strs = {c.strftime('%Y-%m-%d') for c in CardioEntry.objects.filter(user=user, date__gte=ninety_days_ago, completed=True).values_list('date', flat=True)}
+        nutrition_logged_strs = {
+            d.strftime('%Y-%m-%d') for d in NutritionDay.objects.filter(
+                user=user, date__gte=ninety_days_ago, date__lte=today
+            ).filter(
+                models.Q(meals__isnull=False) | models.Q(water_consumed_ml__gt=0)
+            ).values_list('date', flat=True).distinct()
+        }
+
+        today_str = today.strftime('%Y-%m-%d')
+        def is_day_active(date_key):
+            if activity_dates.get(date_key):
+                return True
+            if date_key in cardio_date_strs or date_key in nutrition_logged_strs or date_key in weight_date_strs:
+                return True
+            dl = daily_logs_map.get(date_key)
+            if dl and (dl.steps or dl.sleep_hours or dl.day_status == 'COMPLETED'):
+                return True
+            return False
+
+        def is_day_rest(date_key):
+            c_info = calendar_days.get(date_key)
+            if c_info and c_info.get('status') == 'REST':
+                return True
+            dl = daily_logs_map.get(date_key)
+            if dl and (dl.day_status == 'REST' or (dl.recovery_notes and ('rest' in dl.recovery_notes.lower() or 'recovery' in dl.recovery_notes.lower()))):
+                return True
+            pd = program_days_map.get(date_key)
+            if pd:
+                r_name = (pd.routine.name if pd.routine else pd.label or '').lower()
+                if pd.status == 'REST' or pd.is_optional or 'rest' in r_name or 'recovery' in r_name:
+                    return True
+            return False
+
+        streak = 0
+        active_days_count = 0
+        consecutive_rest = 0
+
+        today_active = is_day_active(today_str)
+        today_rest = is_day_rest(today_str)
+        yesterday_str = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday_qualified = is_day_active(yesterday_str) or is_day_rest(yesterday_str)
+
+        if today_active:
+            check_date = today
+        elif today_rest and yesterday_qualified:
+            check_date = today
+        else:
+            check_date = today - timedelta(days=1)
+
+        while check_date >= ninety_days_ago:
+            k = check_date.strftime('%Y-%m-%d')
+            if is_day_active(k):
+                streak += 1
+                active_days_count += 1
+                consecutive_rest = 0
+            elif is_day_rest(k):
+                if consecutive_rest < 2:
+                    streak += 1
+                    consecutive_rest += 1
+                else:
+                    break
+            else:
+                break
+            check_date -= timedelta(days=1)
+
+        if active_days_count == 0:
+            streak = 0
 
         return Response({
             'streak_days': streak,
@@ -427,6 +515,7 @@ class DashboardStatsView(APIView):
                 'weight': weight_trend,
                 'volume': volume_trend,
                 'nutrition': nutrition_trend,
+                'calories_burned': calories_burned_trend,
             }
         })
 

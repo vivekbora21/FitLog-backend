@@ -10,9 +10,9 @@ from users.views import (
 from gyms.views import GymViewSet
 from memberships.views import GymMembershipViewSet, TrainerClientViewSet, GymInvitationViewSet, AcceptInvitationView
 from exercises.views import ExerciseViewSet, MuscleGroupViewSet, EquipmentTypeViewSet
-from workouts.views import WorkoutSessionViewSet, RoutineViewSet, AssignedWorkoutViewSet, CardioEntryViewSet
+from workouts.views import WorkoutSessionViewSet, RoutineViewSet, AssignedWorkoutViewSet, CardioEntryViewSet, CalorieBurnHistoryView
 from nutrition.views import NutritionDayView, MealEntryViewSet, MacroTargetView, FoodViewSet, RecommendedMacroTargetView, RecentFoodsView, RepeatYesterdayView, NutritionHistoryView
-from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalRecordViewSet, DailyLogViewSet
+from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalRecordViewSet, DailyLogViewSet, ProgressPhotoViewSet
 from notifications.views import NotificationViewSet
 from core.views import AuditLogViewSet
 from analytics.views import DashboardStatsView, JourneyPacingStatusView, CalendarDayStatusView
@@ -36,6 +36,7 @@ router.register(r'progress/weight', WeightEntryViewSet, basename='weight')
 router.register(r'progress/measurements', BodyMeasurementViewSet, basename='measurement')
 router.register(r'progress/prs', PersonalRecordViewSet, basename='pr')
 router.register(r'progress/daily', DailyLogViewSet, basename='daily-log')
+router.register(r'progress/photos', ProgressPhotoViewSet, basename='progress-photo')
 router.register(r'notifications', NotificationViewSet, basename='notification')
 router.register(r'audit-logs', AuditLogViewSet, basename='audit-log')
 router.register(r'plans', PlanViewSet, basename='plan')
@@ -61,6 +62,7 @@ urlpatterns = [
     path('api/nutrition/repeat-yesterday/', RepeatYesterdayView.as_view(), name='repeat_yesterday'),
     path('api/nutrition/history/', NutritionHistoryView.as_view(), name='nutrition_history'),
     path('api/nutrition-history/', NutritionHistoryView.as_view(), name='nutrition_history_alt'),
+    path('api/workouts/calorie-history/', CalorieBurnHistoryView.as_view(), name='calorie_burn_history'),
     path('api/analytics/dashboard/', DashboardStatsView.as_view(), name='dashboard_stats'),
     path('api/analytics/journey-status/', JourneyPacingStatusView.as_view(), name='journey_pacing_status'),
     path('api/analytics/calendar-day-status/', CalendarDayStatusView.as_view(), name='calendar_day_status'),

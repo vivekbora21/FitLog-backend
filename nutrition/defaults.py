@@ -19,6 +19,8 @@ DEFAULT_MACRO_TARGETS = {
 DEFAULT_LIFESTYLE_TARGETS = {
     'daily_steps': 8000,
     'sleep_hours': 7.5,
+    # ~300-400 kcal/session x the default weekly-workouts count, rounded.
+    'weekly_calories_burned': 2000,
 }
 
 # Option A totals from the "New start.xlsx" Diet Plan sheet (sum of its meal rows).

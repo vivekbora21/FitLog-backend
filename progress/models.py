@@ -141,3 +141,40 @@ class DailyLog(UUIDTimeStampedModel):
     def __str__(self):
         return f"DailyLog {self.user.email} on {self.date}: {self.steps or 0} steps, {self.sleep_hours or 0}h sleep"
 
+
+class ProgressPhoto(UUIDTimeStampedModel):
+    """
+    A member's body-transformation photo, tagged with date and camera angle.
+    Stored as a file upload; the URL is served by the backend or CDN.
+    """
+    ANGLE_CHOICES = [
+        ('FRONT', 'Front'),
+        ('BACK', 'Back'),
+        ('SIDE_LEFT', 'Side — Left'),
+        ('SIDE_RIGHT', 'Side — Right'),
+        ('CUSTOM', 'Custom'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='progress_photos'
+    )
+    date = models.DateField()
+    photo = models.ImageField(upload_to='progress_photos/%Y/%m/', blank=True, null=True)
+    photo_url = models.URLField(max_length=500, blank=True, default='', help_text='External URL (e.g. CDN) when not using file upload')
+    angle = models.CharField(max_length=20, choices=ANGLE_CHOICES, default='FRONT')
+    notes = models.TextField(blank=True, default='')
+    is_private = models.BooleanField(default=True, help_text='Private photos are not shared with trainers')
+    weight_kg = models.FloatField(null=True, blank=True, help_text='Optional weight snapshot at time of photo')
+
+    class Meta:
+        ordering = ['-date', 'angle']
+
+    def get_photo_url(self):
+        if self.photo:
+            return self.photo.url
+        return self.photo_url or None
+
+    def __str__(self):
+        return f"Photo {self.angle} — {self.user.email} on {self.date}"

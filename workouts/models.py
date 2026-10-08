@@ -281,6 +281,7 @@ class WorkoutSet(UUIDTimeStampedModel):
     weight_kg = models.FloatField(default=0)
     reps = models.PositiveIntegerField(default=0)
     rpe = models.FloatField(null=True, blank=True)
+    rir = models.FloatField(null=True, blank=True, help_text='Reps in Reserve — inverse complement of RPE')
     completed = models.BooleanField(default=True)
     duration_seconds = models.PositiveIntegerField(null=True, blank=True, help_text='Duration in seconds for cardio sets')
     distance_km = models.FloatField(null=True, blank=True, help_text='Distance in km')
@@ -296,6 +297,23 @@ class WorkoutSet(UUIDTimeStampedModel):
 
     def volume_kg(self):
         return round(self.weight_kg * self.reps, 1) if self.completed else 0.0
+
+    def estimate_calories(self, weight_kg):
+        """Server-side calorie estimate for when the client didn't supply one.
+        Cardio sets use their logged duration; strength sets fall back to an
+        average 3 seconds of time-under-tension per rep, since no duration is
+        logged for them."""
+        exercise = self.workout_exercise.exercise
+        if exercise.met_value is None or not weight_kg:
+            return None
+        if self.duration_seconds:
+            duration_minutes = self.duration_seconds / 60
+        elif self.reps:
+            duration_minutes = (self.reps * 3) / 60
+        else:
+            return None
+        estimated = exercise.estimated_calories_burned(weight_kg, duration_minutes)
+        return round(estimated) if estimated is not None else None
 
     def __str__(self):
         if self.duration_seconds or self.incline_percent is not None or self.speed_kmh is not None:

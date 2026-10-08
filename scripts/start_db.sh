@@ -1,6 +1,7 @@
 #!/bin/bash
+BACKEND_DIR="$(dirname "$(dirname "$(realpath "$0")")")"
 PG_BIN="/usr/lib/postgresql/16/bin"
-PGDATA="/home/vivek/Desktop/FitLog/backend/pgdata"
+PGDATA="$BACKEND_DIR/pgdata"
 PORT=5433
 
 if $PG_BIN/pg_isready -h localhost -p $PORT > /dev/null 2>&1; then

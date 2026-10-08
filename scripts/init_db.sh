@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
 
+BACKEND_DIR="$(dirname "$(dirname "$(realpath "$0")")")"
 PG_BIN="/usr/lib/postgresql/16/bin"
-PGDATA="/home/vivek/Desktop/FitLog/backend/pgdata"
+PGDATA="$BACKEND_DIR/pgdata"
 PORT=5433
 DB_NAME="fitlog_db"
 DB_USER="fitlog_user"

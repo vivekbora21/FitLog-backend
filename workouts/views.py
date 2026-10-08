@@ -1,10 +1,12 @@
 import uuid
+from core.query_params import apply_date_range
 from datetime import date, timedelta
 from collections import Counter
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Count, Q
@@ -48,9 +50,10 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             return WorkoutSession.objects.none()
 
         # By default, member sees their own personal sessions
-        return WorkoutSession.objects.filter(user=user).prefetch_related(
+        queryset = WorkoutSession.objects.filter(user=user).prefetch_related(
             'exercises__sets', 'exercises__exercise'
         )
+        return apply_date_range(queryset, self.request, 'started_at__date')
 
     def _require_owner(self, instance):
         # Coaches can read a client's sessions via ?client_id, but only the owner may change them.
@@ -130,7 +133,15 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         program = JourneyProgram.objects.filter(user=request.user, active=True).first()
         if not program:
             return Response({'program': None, 'today': None})
-        day = program.days.filter(day_number=program.current_day).select_related('routine').prefetch_related('routine__exercises__exercise').first()
+        requested_date = request.query_params.get('date')
+        day_number = program.current_day
+        if requested_date:
+            try:
+                requested = date.fromisoformat(requested_date)
+            except ValueError:
+                return Response({'detail': 'Invalid date format (use YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
+            day_number = (requested - program.start_date).days + 1
+        day = program.days.filter(day_number=day_number).select_related('program', 'routine', 'completed_session').prefetch_related('routine__exercises__exercise').first()
         return Response({
             'program': {
                 'id': str(program.id),
@@ -149,7 +160,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         program = JourneyProgram.objects.filter(user=request.user, active=True).first()
         if not program:
             return Response({'program': None, 'days': []})
-        days = program.days.select_related('routine').prefetch_related(
+        days = program.days.select_related('routine', 'completed_session').prefetch_related(
             'routine__exercises__exercise',
             'routine__exercises__exercise__primary_muscle'
         ).order_by('day_number')
@@ -723,3 +734,48 @@ class CardioEntryViewSet(viewsets.ModelViewSet):
         return CardioEntry.objects.filter(user=self.request.user).order_by('-date')
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+
+class CalorieBurnHistoryView(APIView):
+    """
+    Daily calories-burned history for the Progress > Burn tab, so the client can
+    filter it into day/week/month windows the same way nutrition history does.
+    Accepts ?days=N (default 30, max 365).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            days = int(request.query_params.get('days', 30))
+        except (ValueError, TypeError):
+            days = 30
+        days = min(max(1, days), 365)
+
+        today = date.today()
+        start_date = today - timedelta(days=days - 1)
+
+        sessions = (
+            WorkoutSession.objects.filter(user=request.user, started_at__date__gte=start_date)
+            .prefetch_related('exercises__sets')
+        )
+        by_day = {}
+        for s in sessions:
+            d = s.started_at.date()
+            entry = by_day.setdefault(d, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0})
+            entry['calories_burned'] += s.total_calories() or 0
+            entry['session_count'] += 1
+            entry['duration_seconds'] += s.duration_seconds or 0
+
+        history = []
+        for i in range(days):
+            d = today - timedelta(days=i)
+            entry = by_day.get(d, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0})
+            history.append({
+                'date': d.isoformat(),
+                'calories_burned': entry['calories_burned'],
+                'session_count': entry['session_count'],
+                'duration_seconds': entry['duration_seconds'],
+                'has_workout': entry['session_count'] > 0,
+            })
+
+        return Response({'history': history})

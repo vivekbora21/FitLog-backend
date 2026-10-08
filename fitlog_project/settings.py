@@ -7,6 +7,7 @@ from datetime import timedelta
 import os
 
 import dj_database_url
+from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
@@ -57,6 +58,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'core.middleware.ApiVersionMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -135,6 +137,7 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'EXCEPTION_HANDLER': 'core.exceptions.exception_handler',
     'PAGE_SIZE': int(os.environ.get('API_PAGE_SIZE', '20')),
 }
 
@@ -160,9 +163,21 @@ EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', True)
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'FitLog <no-reply@fitlog.app>')
 
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', True)  # For seamless local development with Next.js
-CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', '')
+# In production, CORS_ALLOWED_ORIGINS must contain the exact browser origin
+# (scheme + hostname + optional port), never the API URL or a trailing slash.
+# FRONTEND_URL is a convenient single-origin deployment fallback.
+frontend_url = os.environ.get('FRONTEND_URL', '').strip().rstrip('/')
+configured_cors_origins = env_list('CORS_ALLOWED_ORIGINS', '')
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys([*configured_cors_origins, *([frontend_url] if frontend_url else [])]))
+CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', DEBUG)
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = (*default_headers, 'x-api-version')
+
+if not DEBUG and not CORS_ALLOW_ALL_ORIGINS and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured(
+        'Production CORS is enabled but no allowed frontend origin is configured. '
+        'Set FRONTEND_URL or CORS_ALLOWED_ORIGINS.'
+    )
 
 # Needed for the Django admin login when served over HTTPS on a public domain
 CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', '')

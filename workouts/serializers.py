@@ -15,7 +15,7 @@ class WorkoutSetSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkoutSet
         fields = [
-            'id', 'set_number', 'set_type', 'weight_kg', 'reps', 'rpe', 'completed',
+            'id', 'set_number', 'set_type', 'weight_kg', 'reps', 'rpe', 'rir', 'completed',
             'duration_seconds', 'distance_km', 'incline_percent', 'speed_kmh',
             'resistance_level', 'calories', 'heart_rate', 'intensity',
         ]
@@ -36,18 +36,23 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     gym_name = serializers.CharField(source='gym.name', read_only=True)
     total_volume_kg = serializers.FloatField(read_only=True)
     total_calories = serializers.IntegerField(read_only=True)
+    new_prs = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkoutSession
         fields = [
             'id', 'user', 'user_email', 'user_name', 'gym', 'gym_name', 'assigned_workout',
             'routine', 'title', 'started_at', 'completed_at', 'duration_seconds',
-            'overall_rpe', 'notes', 'exercises', 'total_volume_kg', 'total_calories', 'created_at'
+            'overall_rpe', 'notes', 'exercises', 'total_volume_kg', 'total_calories',
+            'new_prs', 'created_at'
         ]
         read_only_fields = ['user', 'created_at']
 
     def get_user_name(self, obj):
         return obj.user.get_full_name() or obj.user.username
+
+    def get_new_prs(self, obj):
+        return getattr(obj, '_new_prs', [])
 
     @transaction.atomic
     def create(self, validated_data):
@@ -62,13 +67,20 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                 started_at + timedelta(seconds=duration) if started_at and duration else timezone.now()
             )
         session = WorkoutSession.objects.create(user=user, **validated_data)
+        weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
 
+        new_prs = []
         for ex_data in exercises_data:
             sets_data = ex_data.pop('sets', [])
             workout_exercise = WorkoutExercise.objects.create(session=session, **ex_data)
 
             for s_data in sets_data:
                 workout_set = WorkoutSet.objects.create(workout_exercise=workout_exercise, **s_data)
+                if workout_set.calories is None:
+                    estimated = workout_set.estimate_calories(weight_kg)
+                    if estimated is not None:
+                        workout_set.calories = estimated
+                        workout_set.save(update_fields=['calories'])
 
                 # Check Personal Record if completed
                 if workout_set.completed and workout_set.weight_kg > 0 and workout_set.reps > 0:
@@ -85,12 +97,37 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                             'achieved_at': session.started_at.date()
                         }
                     )
-                    if not created and est_1rm > pr.estimated_one_rep_max:
+                    if created:
+                        new_prs.append({
+                            'id': str(pr.id),
+                            'exercise_name': exercise.name,
+                            'primary_muscle': exercise.primary_muscle.name if exercise.primary_muscle else 'Compound',
+                            'max_weight_kg': pr.max_weight_kg,
+                            'reps': pr.reps,
+                            'estimated_one_rep_max': pr.estimated_one_rep_max,
+                            'achieved_at': str(session.started_at.date()),
+                            'is_first': True,
+                        })
+                    elif est_1rm > pr.estimated_one_rep_max:
+                        old_1rm = pr.estimated_one_rep_max
                         pr.max_weight_kg = workout_set.weight_kg
                         pr.reps = workout_set.reps
                         pr.estimated_one_rep_max = est_1rm
                         pr.achieved_at = session.started_at.date()
                         pr.save()
+                        new_prs.append({
+                            'id': str(pr.id),
+                            'exercise_name': exercise.name,
+                            'primary_muscle': exercise.primary_muscle.name if exercise.primary_muscle else 'Compound',
+                            'max_weight_kg': pr.max_weight_kg,
+                            'reps': pr.reps,
+                            'estimated_one_rep_max': pr.estimated_one_rep_max,
+                            'previous_1rm': old_1rm,
+                            'achieved_at': str(session.started_at.date()),
+                            'is_first': False,
+                        })
+
+        session._new_prs = new_prs
 
         # If cardio sets were completed, log or update CardioEntry for this date
         total_cardio_secs = 0
@@ -194,6 +231,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         instance.save()
 
         if exercises_data is not None:
+            weight_kg = getattr(getattr(instance.user, 'profile', None), 'weight_kg', None)
             affected = set(instance.exercises.values_list('exercise_id', flat=True))
             instance.exercises.all().delete()
             for ex_data in exercises_data:
@@ -201,7 +239,12 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                 workout_exercise = WorkoutExercise.objects.create(session=instance, **ex_data)
                 affected.add(workout_exercise.exercise_id)
                 for s_data in sets_data:
-                    WorkoutSet.objects.create(workout_exercise=workout_exercise, **s_data)
+                    workout_set = WorkoutSet.objects.create(workout_exercise=workout_exercise, **s_data)
+                    if workout_set.calories is None:
+                        estimated = workout_set.estimate_calories(weight_kg)
+                        if estimated is not None:
+                            workout_set.calories = estimated
+                            workout_set.save(update_fields=['calories'])
             recompute_personal_records(instance.user, affected)
         elif 'started_at' in validated_data:
             # PR dates follow the session date.
@@ -286,12 +329,22 @@ class RoutineSerializer(serializers.ModelSerializer):
 
 class ProgramDaySerializer(serializers.ModelSerializer):
     routine_details = RoutineSerializer(source='routine', read_only=True)
+    calendar_date = serializers.SerializerMethodField()
+    completed_session_id = serializers.UUIDField(source='completed_session.id', read_only=True, allow_null=True)
+    completed_session_title = serializers.CharField(source='completed_session.title', read_only=True, allow_null=True)
+
     class Meta:
         model = ProgramDay
         fields = [
-            'id', 'day_number', 'label', 'is_optional', 'status', 'routine', 'routine_details',
+            'id', 'day_number', 'calendar_date', 'label', 'is_optional', 'status', 'routine', 'routine_details',
+            'completed_session_id', 'completed_session_title',
             'workout_payload', 'meal_payload', 'macro_targets', 'expected_weight_kg',
         ]
+
+    def get_calendar_date(self, obj):
+        if not obj.program_id or not obj.program.start_date:
+            return None
+        return (obj.program.start_date + timedelta(days=obj.day_number - 1)).isoformat()
 
     def to_representation(self, instance):
         # Tells the nested RoutineExerciseSerializer which day it's rendering for, so it

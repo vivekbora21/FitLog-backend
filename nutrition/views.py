@@ -6,7 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from .models import MacroTarget, NutritionDay, MealEntry
 from .serializers import MacroTargetSerializer, NutritionDaySerializer, MealEntrySerializer, FoodSerializer, foods_visible_to
-from .targets import calculate_recommended_targets, get_or_create_macro_target, resolve_target_update, targets_payload, TargetTimeline
+from .targets import calculate_recommended_targets, get_or_create_macro_target, resolve_target_update, targets_payload, exercise_calories_today, TargetTimeline
 from workouts.models import JourneyProgram
 
 class NutritionDayView(APIView):
@@ -51,7 +51,10 @@ class NutritionDayView(APIView):
 
         return Response({
             'day': NutritionDaySerializer(day).data,
-            'targets': MacroTargetSerializer(target).data,
+            'targets': {
+                **MacroTargetSerializer(target).data,
+                'exercise_calories': exercise_calories_today(request.user, target_date),
+            },
             'yesterday_meals': yesterday_meals,
             'plan': {
                 'mode': mode,
@@ -303,7 +306,15 @@ class NutritionHistoryView(APIView):
         days = min(max(1, days), 90)
 
         today = date.today()
-        start_date = today - timedelta(days=days - 1)
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        try:
+            range_start = date.fromisoformat(date_from) if date_from else today - timedelta(days=days - 1)
+            range_end = date.fromisoformat(date_to) if date_to else today
+        except ValueError:
+            return Response({'detail': 'date_from and date_to must use YYYY-MM-DD.'}, status=400)
+        start_date = min(range_start, range_end)
+        today = min(max(range_end, start_date), date.today())
 
         # Prefetch days and meals for user in range
         nutrition_days = (

@@ -1,9 +1,9 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
 from users.models import User
-from workouts.models import JourneyProgram, ProgramDay, Routine
+from workouts.models import JourneyProgram, ProgramDay, Routine, WorkoutSession
 from progress.models import DailyLog, WeightEntry
 from nutrition.models import MacroTarget, NutritionDay, MealEntry
 from analytics.pacing import resolve_start_weight, resolve_target_weekly_rate, resolve_target_weight, calculate_journey_pacing
@@ -61,6 +61,33 @@ class AnalyticsAdherenceTests(TestCase):
         self.assertEqual(adherence['workout']['actual'], pacing_adherence['completed_sessions'])
         self.assertEqual(adherence['workout']['target'], pacing_adherence['scheduled_sessions'])
         self.assertEqual(adherence['workout']['status'], pacing_adherence['status'])
+
+    def test_streak_calculation_preserves_rest_days(self):
+        today = date.today()
+        two_days_ago = today - timedelta(days=2)
+        WorkoutSession.objects.create(
+            user=self.user,
+            title="Chest Day",
+            started_at=datetime.combine(two_days_ago, time(10, 0)),
+            completed_at=datetime.combine(two_days_ago, time(11, 0)),
+        )
+        yesterday = today - timedelta(days=1)
+        DailyLog.objects.create(
+            user=self.user,
+            date=yesterday,
+            day_status='REST',
+            recovery_notes='Scheduled rest day'
+        )
+        WorkoutSession.objects.create(
+            user=self.user,
+            title="Leg Day",
+            started_at=datetime.combine(today, time(10, 0)),
+            completed_at=datetime.combine(today, time(11, 0)),
+        )
+        response = self.client.get('/api/analytics/dashboard/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['streak_days'], 3)
 
     def test_recovery_pillar_and_weekly_review_aggregation(self):
         start_d = date.today() - timedelta(days=6)

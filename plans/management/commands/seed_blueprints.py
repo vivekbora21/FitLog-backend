@@ -43,7 +43,7 @@ CUT_WORKOUTS = {
         {'exercise_name': 'Conventional Deadlift', 'sets': 3, 'reps': '5', 'rpe': 8.0, 'rest_seconds': 150, 'progression_rule': 'Add 5kg per week while bar speed stays fast.'},
         {'exercise_name': 'Bulgarian Split Squat', 'sets': 3, 'reps': '10-12', 'rpe': 7.5, 'rest_seconds': 90, 'progression_rule': 'Add dumbbell weight once both legs hit 12 reps.'},
         {'exercise_name': 'Seated Cable Row', 'sets': 3, 'reps': '10-12', 'rpe': 7.5, 'rest_seconds': 90, 'progression_rule': 'Increase load when form is clean at top of range.'},
-        {'exercise_name': 'Treadmill Running', 'sets': 1, 'reps': '20 min Zone 2', 'rpe': None, 'rest_seconds': 0, 'progression_rule': 'Increase duration by 5 min every 2 weeks.'},
+        {'exercise_name': 'Treadmill Running', 'sets': 1, 'reps': '20 min Zone 2', 'rpe': None, 'rest_seconds': 0, 'progression_rule': 'Increase duration by 5 min every 2 weeks.', 'is_cardio': True},
     ],
     'day_6': [],
     'day_7': [],
@@ -135,7 +135,7 @@ HABIT_WORKOUTS = {
     'day_4': [],
     'day_5': [
         {'exercise_name': 'Walking Lunge', 'sets': 3, 'reps': '10 per leg', 'rpe': 6.0, 'rest_seconds': 60, 'progression_rule': 'Add dumbbells once bodyweight feels easy.'},
-        {'exercise_name': 'Incline Treadmill Walk', 'sets': 1, 'reps': '15-20 min', 'rpe': None, 'rest_seconds': 0, 'progression_rule': 'Increase incline or duration gradually.'},
+        {'exercise_name': 'Incline Treadmill Walk', 'sets': 1, 'reps': '15-20 min', 'rpe': None, 'rest_seconds': 0, 'progression_rule': 'Increase incline or duration gradually.', 'is_cardio': True},
         {'exercise_name': 'Dead Bug', 'sets': 3, 'reps': '10 per side', 'rpe': None, 'rest_seconds': 45, 'progression_rule': 'Slow the tempo before adding reps.'},
     ],
     'day_6': [],
@@ -167,7 +167,7 @@ RECOMP_WORKOUTS = {
     ],
     'day_5': [],
     'day_6': [
-        {'exercise_name': 'Rowing Machine', 'sets': 1, 'reps': '20 min Zone 2', 'rpe': None, 'rest_seconds': 0, 'progression_rule': 'Increase duration gradually every 2 weeks.'},
+        {'exercise_name': 'Rowing Machine', 'sets': 1, 'reps': '20 min Zone 2', 'rpe': None, 'rest_seconds': 0, 'progression_rule': 'Increase duration gradually every 2 weeks.', 'is_cardio': True},
         {'exercise_name': 'Hanging Knee Raise', 'sets': 3, 'reps': '10-12', 'rpe': None, 'rest_seconds': 60, 'progression_rule': 'Progress to straight-leg raises.'},
     ],
     'day_7': [],

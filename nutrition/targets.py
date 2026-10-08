@@ -9,7 +9,7 @@ activity -> BMR ~1,718 kcal, maintenance ~2,660 kcal, ~500 kcal deficit -> 2,160
 from datetime import date
 
 from progress.models import WeightEntry
-from workouts.models import JourneyProgram
+from workouts.models import JourneyProgram, WorkoutSession
 from .defaults import DEFAULT_MACRO_TARGETS, DEFAULT_LIFESTYLE_TARGETS
 from .models import MacroTarget, TargetHistory, TargetValues
 
@@ -167,6 +167,7 @@ TARGET_LIMITS = {
     'sleep_hours': (4, 12),
     'weekly_workouts': (1, 14),
     'weekly_cardio_minutes': (0, 1500),
+    'weekly_calories_burned': (0, 20000),
 }
 MAX_CALORIES = 6000
 KCAL_PER_G = {'protein_g': 4, 'carbs_g': 4, 'fat_g': 9}
@@ -185,6 +186,10 @@ def plan_weekly_cardio(program, day=None):
     return program.cardio_target_for_day(day) if program else 120
 
 
+def plan_weekly_calories_burned():
+    return DEFAULT_LIFESTYLE_TARGETS['weekly_calories_burned']
+
+
 def weekly_workouts_target(values, program):
     return values.weekly_workouts or plan_weekly_workouts(program)
 
@@ -193,6 +198,12 @@ def weekly_cardio_target(values, program, day=None):
     if values.weekly_cardio_minutes is not None:
         return values.weekly_cardio_minutes
     return plan_weekly_cardio(program, day)
+
+
+def weekly_calories_burned_target(values):
+    if values.weekly_calories_burned is not None:
+        return values.weekly_calories_burned
+    return plan_weekly_calories_burned()
 
 
 def sleep_target_label(hours):
@@ -243,7 +254,7 @@ def resolve_target_update(target, data):
         if field not in data:
             continue
         raw = data[field]
-        if raw in (None, '') and field in ('weekly_workouts', 'weekly_cardio_minutes'):
+        if raw in (None, '') and field in ('weekly_workouts', 'weekly_cardio_minutes', 'weekly_calories_burned'):
             sent[field] = None
             continue
         try:
@@ -330,10 +341,20 @@ def suggested_targets(user, recommended=None, program=None):
         'sleep_hours': DEFAULT_LIFESTYLE_TARGETS['sleep_hours'],
         'weekly_workouts': plan_weekly_workouts(program),
         'weekly_cardio_minutes': plan_weekly_cardio(program),
+        'weekly_calories_burned': plan_weekly_calories_burned(),
     }
     if recommended.get('available'):
         suggested.update({k: recommended[k] for k in ('daily_calories', 'protein_g', 'carbs_g', 'fat_g')})
     return suggested
+
+
+def exercise_calories_today(user, day=None):
+    """Sum of estimated calories burned across today's logged workout sessions,
+    so the member can 'eat back' real exercise calories on top of the
+    activity-level-scaled daily target (which only reflects an average week)."""
+    day = day or date.today()
+    sessions = WorkoutSession.objects.filter(user=user, started_at__date=day)
+    return sum(s.total_calories() or 0 for s in sessions)
 
 
 def targets_payload(user, values=None, adjustments=None):
@@ -345,10 +366,13 @@ def targets_payload(user, values=None, adjustments=None):
     return {
         'id': str(target.id),
         **values,
+        'exercise_calories': exercise_calories_today(user),
         'effective': {
             'weekly_workouts': values['weekly_workouts'] or plan_weekly_workouts(program),
             'weekly_cardio_minutes': (values['weekly_cardio_minutes']
                                       if values['weekly_cardio_minutes'] is not None else plan_weekly_cardio(program)),
+            'weekly_calories_burned': (values['weekly_calories_burned']
+                                       if values['weekly_calories_burned'] is not None else plan_weekly_calories_burned()),
         },
         'suggested': suggested_targets(user, recommended, program),
         'limits': {**TARGET_LIMITS, 'daily_calories': (_calorie_floor(user), MAX_CALORIES)},

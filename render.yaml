@@ -19,8 +19,10 @@ services:
         value: "https://fitlog-backend-ps99.onrender.com"
       - key: CORS_ALLOW_ALL_ORIGINS
         value: "False"
+      - key: FRONTEND_URL
+        sync: false   # exact browser origin, e.g. https://fitlog.vercel.app
       - key: CORS_ALLOWED_ORIGINS
-        sync: false   # set to your frontend URL, e.g. https://fitlog.vercel.app
+        sync: false   # optional comma-separated additional browser origins
       - key: DATABASE_URL
         sync: false   # paste your Neon connection string (Neon offers a permanent free Postgres tier)
       - key: SEED_ON_BUILD
