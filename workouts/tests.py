@@ -4,7 +4,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from users.models import User
 from exercises.models import Exercise, MuscleGroup, EquipmentType
-from .models import Routine, RoutineExercise, WorkoutSession, WorkoutExercise, WorkoutSet
+from .models import Routine, RoutineExercise, WorkoutSession, WorkoutExercise, WorkoutSet, CardioEntry
 from .progression import parse_rep_range, progression_for
 
 
@@ -163,3 +163,55 @@ class SessionEditTests(TestCase):
         self.assertEqual(res.data[str(self.squat.id)]['sets'][0], {'set_type': 'NORMAL', 'weight_kg': 120, 'reps': 3})
         res = self.client.get('/api/workouts/sessions/recent-exercises/')
         self.assertEqual(res.data[0]['name'], 'Squat')
+
+    def test_negative_weight_is_rejected(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(-50, 5), format='json')
+        self.assertEqual(res.status_code, 400)
+
+
+class CardioEntrySyncTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='cardio@example.com', username='cardio', password='testpassword123')
+        muscle = MuscleGroup.objects.create(name='Cardio', slug='cardio')
+        equipment = EquipmentType.objects.create(name='Machine', slug='machine')
+        self.treadmill = Exercise.objects.create(name='Treadmill Run', slug='treadmill-run', primary_muscle=muscle, equipment=equipment)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def payload(self, duration_seconds, with_cardio=True):
+        exercises = []
+        if with_cardio:
+            exercises.append({
+                'exercise': str(self.treadmill.id), 'order': 1, 'rest_seconds': 0,
+                'sets': [{
+                    'set_number': 1, 'set_type': 'NORMAL', 'weight_kg': 0, 'reps': 0,
+                    'completed': True, 'duration_seconds': duration_seconds, 'intensity': 'Zone 2',
+                }],
+            })
+        return {
+            'title': 'Cardio',
+            'started_at': (timezone.now() - timedelta(hours=1)).isoformat(),
+            'duration_seconds': duration_seconds,
+            'exercises': exercises,
+        }
+
+    def test_create_generates_cardio_entry_linked_to_session(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(1800), format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        entry = CardioEntry.objects.get(session_id=res.data['id'])
+        self.assertEqual(entry.duration_minutes, 30)
+
+    def test_edit_updates_existing_cardio_entry_instead_of_duplicating(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(1800), format='json')
+        session_id = res.data['id']
+        res = self.client.put(f'/api/workouts/sessions/{session_id}/', self.payload(2700), format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(CardioEntry.objects.filter(session_id=session_id).count(), 1)
+        self.assertEqual(CardioEntry.objects.get(session_id=session_id).duration_minutes, 45)
+
+    def test_removing_cardio_exercise_deletes_the_entry(self):
+        res = self.client.post('/api/workouts/sessions/', self.payload(1800), format='json')
+        session_id = res.data['id']
+        res = self.client.put(f'/api/workouts/sessions/{session_id}/', self.payload(0, with_cardio=False), format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertFalse(CardioEntry.objects.filter(session_id=session_id).exists())

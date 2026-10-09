@@ -54,37 +54,41 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     def get_new_prs(self, obj):
         return getattr(obj, '_new_prs', [])
 
-    @transaction.atomic
-    def create(self, validated_data):
-        exercises_data = validated_data.pop('exercises', [])
-        user = self.context['request'].user
-        # The session is being saved because it finished, so completed_at is never left
-        # empty: trust the client's clock when sent, else derive it from the duration.
-        if not validated_data.get('completed_at'):
-            duration = validated_data.get('duration_seconds') or 0
-            started_at = validated_data.get('started_at')
-            validated_data['completed_at'] = (
-                started_at + timedelta(seconds=duration) if started_at and duration else timezone.now()
-            )
-        session = WorkoutSession.objects.create(user=user, **validated_data)
-        weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
-
-        new_prs = []
+    @staticmethod
+    def _create_exercises(session, exercises_data, weight_kg, user, track_prs):
+        """Creates WorkoutExercise/WorkoutSet rows in bulk (instead of one INSERT per row —
+        a 15-exercise/60-set session used to cost 150+ queries), estimating calories
+        up front since PKs are client-generated UUIDs and need no round trip to know.
+        Returns (new_prs, cardio sets grouped for the cardio-entry sync)."""
+        all_sets_data = []  # (sets_data, exercise) per exercise, in order
+        workout_exercises = []
         for ex_data in exercises_data:
             sets_data = ex_data.pop('sets', [])
-            workout_exercise = WorkoutExercise.objects.create(session=session, **ex_data)
+            workout_exercises.append(WorkoutExercise(session=session, **ex_data))
+            all_sets_data.append((sets_data, ex_data['exercise']))
+        WorkoutExercise.objects.bulk_create(workout_exercises)
 
+        all_sets = []  # flat, for the single bulk_create call
+        sets_by_exercise = []  # parallel to workout_exercises
+        for workout_exercise, (sets_data, exercise) in zip(workout_exercises, all_sets_data):
+            created_sets = []
             for s_data in sets_data:
-                workout_set = WorkoutSet.objects.create(workout_exercise=workout_exercise, **s_data)
+                workout_set = WorkoutSet(workout_exercise=workout_exercise, **s_data)
                 if workout_set.calories is None:
                     estimated = workout_set.estimate_calories(weight_kg)
                     if estimated is not None:
                         workout_set.calories = estimated
-                        workout_set.save(update_fields=['calories'])
+                all_sets.append(workout_set)
+                created_sets.append(workout_set)
+            sets_by_exercise.append(created_sets)
+        if all_sets:
+            WorkoutSet.objects.bulk_create(all_sets)
 
-                # Check Personal Record if completed
-                if workout_set.completed and workout_set.weight_kg > 0 and workout_set.reps > 0:
-                    exercise = workout_exercise.exercise
+        new_prs = []
+        cardio_candidates = []  # (exercise_name, primary_muscle_name, [WorkoutSet, ...])
+        for workout_exercise, (sets_data, exercise), created_sets in zip(workout_exercises, all_sets_data, sets_by_exercise):
+            for workout_set in created_sets:
+                if track_prs and workout_set.completed and workout_set.weight_kg > 0 and workout_set.reps > 0:
                     est_1rm = PersonalRecord.calculate_epley_1rm(workout_set.weight_kg, workout_set.reps)
 
                     pr, created = PersonalRecord.objects.get_or_create(
@@ -127,46 +131,88 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                             'is_first': False,
                         })
 
-        session._new_prs = new_prs
+            muscle_name = exercise.primary_muscle.name if exercise.primary_muscle else ''
+            cardio_candidates.append((exercise.name, muscle_name, created_sets))
 
-        # If cardio sets were completed, log or update CardioEntry for this date
+        return new_prs, cardio_candidates
+
+    @staticmethod
+    def _sync_cardio_entry(session, user, cardio_candidates):
+        """Keeps the auto-generated CardioEntry for this session in sync with its
+        current cardio sets: updates it in place, creates it if newly cardio, or
+        deletes it if the session no longer has qualifying cardio sets."""
         total_cardio_secs = 0
         cardio_modality = 'OTHER'
         cardio_intensity = 'Zone 2'
-        for we in session.exercises.select_related('exercise__primary_muscle').prefetch_related('sets'):
-            ex_name = we.exercise.name.lower()
-            muscle_name = (we.exercise.primary_muscle.name if we.exercise.primary_muscle else '').lower()
-            is_cardio = muscle_name == 'cardio' or 'cardio' in muscle_name or any(s.duration_seconds for s in we.sets.all())
-            if is_cardio:
-                if 'tread' in ex_name or 'incline' in ex_name or 'walk' in ex_name:
-                    cardio_modality = 'TREADMILL'
-                elif 'cycl' in ex_name or 'bike' in ex_name or 'spin' in ex_name:
-                    cardio_modality = 'CYCLING'
-                elif 'row' in ex_name:
-                    cardio_modality = 'ROWING'
-                elif 'ellipt' in ex_name:
-                    cardio_modality = 'ELLIPTICAL'
-                elif 'cross' in ex_name:
-                    cardio_modality = 'CROSS_TRAINER'
+        for ex_name_raw, muscle_name_raw, sets in cardio_candidates:
+            ex_name = ex_name_raw.lower()
+            muscle_name = muscle_name_raw.lower()
+            is_cardio = muscle_name == 'cardio' or 'cardio' in muscle_name or any(s.duration_seconds for s in sets)
+            if not is_cardio:
+                continue
 
-                for s in we.sets.filter(completed=True):
-                    if s.duration_seconds:
-                        total_cardio_secs += s.duration_seconds
-                    if s.intensity:
-                        cardio_intensity = s.intensity
-                    if s.incline_percent is not None and s.incline_percent > 0:
-                        cardio_intensity = f"{s.incline_percent}% Incline ({cardio_intensity})"
+            if 'tread' in ex_name or 'incline' in ex_name or 'walk' in ex_name:
+                cardio_modality = 'TREADMILL'
+            elif 'cycl' in ex_name or 'bike' in ex_name or 'spin' in ex_name:
+                cardio_modality = 'CYCLING'
+            elif 'row' in ex_name:
+                cardio_modality = 'ROWING'
+            elif 'ellipt' in ex_name:
+                cardio_modality = 'ELLIPTICAL'
+            elif 'cross' in ex_name:
+                cardio_modality = 'CROSS_TRAINER'
 
+            for s in sets:
+                if not s.completed:
+                    continue
+                if s.duration_seconds:
+                    total_cardio_secs += s.duration_seconds
+                if s.intensity:
+                    cardio_intensity = s.intensity
+                if s.incline_percent is not None and s.incline_percent > 0:
+                    cardio_intensity = f"{s.incline_percent}% Incline ({cardio_intensity})"
+
+        existing_entry = CardioEntry.objects.filter(session=session).first()
         if total_cardio_secs >= 60:
             cardio_mins = round(total_cardio_secs / 60)
-            CardioEntry.objects.create(
-                user=user,
-                date=session.started_at.date(),
-                modality=cardio_modality,
-                duration_minutes=cardio_mins,
-                intensity=cardio_intensity,
-                completed=True
+            if existing_entry:
+                existing_entry.date = session.started_at.date()
+                existing_entry.modality = cardio_modality
+                existing_entry.duration_minutes = cardio_mins
+                existing_entry.intensity = cardio_intensity
+                existing_entry.completed = True
+                existing_entry.save()
+            else:
+                CardioEntry.objects.create(
+                    user=user,
+                    session=session,
+                    date=session.started_at.date(),
+                    modality=cardio_modality,
+                    duration_minutes=cardio_mins,
+                    intensity=cardio_intensity,
+                    completed=True
+                )
+        elif existing_entry:
+            existing_entry.delete()
+
+    @transaction.atomic
+    def create(self, validated_data):
+        exercises_data = validated_data.pop('exercises', [])
+        user = self.context['request'].user
+        # The session is being saved because it finished, so completed_at is never left
+        # empty: trust the client's clock when sent, else derive it from the duration.
+        if not validated_data.get('completed_at'):
+            duration = validated_data.get('duration_seconds') or 0
+            started_at = validated_data.get('started_at')
+            validated_data['completed_at'] = (
+                started_at + timedelta(seconds=duration) if started_at and duration else timezone.now()
             )
+        session = WorkoutSession.objects.create(user=user, **validated_data)
+        weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
+
+        new_prs, cardio_candidates = self._create_exercises(session, exercises_data, weight_kg, user, track_prs=True)
+        session._new_prs = new_prs
+        self._sync_cardio_entry(session, user, cardio_candidates)
 
         # If linked to an assigned workout, mark it COMPLETED
         if session.assigned_workout:
@@ -233,18 +279,11 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         if exercises_data is not None:
             weight_kg = getattr(getattr(instance.user, 'profile', None), 'weight_kg', None)
             affected = set(instance.exercises.values_list('exercise_id', flat=True))
+            affected.update(ex_data['exercise'].id for ex_data in exercises_data if ex_data.get('exercise'))
             instance.exercises.all().delete()
-            for ex_data in exercises_data:
-                sets_data = ex_data.pop('sets', [])
-                workout_exercise = WorkoutExercise.objects.create(session=instance, **ex_data)
-                affected.add(workout_exercise.exercise_id)
-                for s_data in sets_data:
-                    workout_set = WorkoutSet.objects.create(workout_exercise=workout_exercise, **s_data)
-                    if workout_set.calories is None:
-                        estimated = workout_set.estimate_calories(weight_kg)
-                        if estimated is not None:
-                            workout_set.calories = estimated
-                            workout_set.save(update_fields=['calories'])
+
+            _, cardio_candidates = self._create_exercises(instance, exercises_data, weight_kg, instance.user, track_prs=False)
+            self._sync_cardio_entry(instance, instance.user, cardio_candidates)
             recompute_personal_records(instance.user, affected)
         elif 'started_at' in validated_data:
             # PR dates follow the session date.

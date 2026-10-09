@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from core.models import UUIDTimeStampedModel
 
 class Routine(UUIDTimeStampedModel):
@@ -149,6 +150,14 @@ class ProgramDayExerciseSwap(UUIDTimeStampedModel):
 class CardioEntry(UUIDTimeStampedModel):
     MODALITIES = [('TREADMILL', 'Treadmill'), ('CYCLING', 'Cycling'), ('CROSS_TRAINER', 'Cross Trainer'), ('ELLIPTICAL', 'Elliptical'), ('ROWING', 'Rowing'), ('OTHER', 'Other')]
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cardio_entries')
+    session = models.ForeignKey(
+        'WorkoutSession',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='auto_cardio_entries',
+        help_text='Set when this entry was auto-generated from a workout session\'s cardio sets, so it can be kept in sync on edit.'
+    )
     date = models.DateField()
     modality = models.CharField(max_length=20, choices=MODALITIES)
     duration_minutes = models.PositiveSmallIntegerField()
@@ -278,7 +287,7 @@ class WorkoutSet(UUIDTimeStampedModel):
     workout_exercise = models.ForeignKey(WorkoutExercise, on_delete=models.CASCADE, related_name='sets')
     set_number = models.PositiveIntegerField(default=1)
     set_type = models.CharField(max_length=15, choices=SET_TYPES, default='NORMAL')
-    weight_kg = models.FloatField(default=0)
+    weight_kg = models.FloatField(default=0, validators=[MinValueValidator(0)])
     reps = models.PositiveIntegerField(default=0)
     rpe = models.FloatField(null=True, blank=True)
     rir = models.FloatField(null=True, blank=True, help_text='Reps in Reserve — inverse complement of RPE')
