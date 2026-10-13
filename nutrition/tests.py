@@ -8,6 +8,7 @@ from workouts.models import JourneyProgram
 from .models import Food, MacroTarget, MealEntry, NutritionDay
 from .defaults import DIET_PLAN_OPTION_A_TARGETS
 from .targets import calculate_recommended_targets, mifflin_st_jeor_bmr, get_or_create_macro_target, TargetTimeline
+from .indian_meals import meal_plan_options, scale_template, TEMPLATES
 
 
 def make_user(email='lifter@example.com', **profile):
@@ -75,6 +76,83 @@ class RecommendedTargetTests(TestCase):
         client.force_authenticate(user=user)
         res = client.post('/api/nutrition/macro-targets/recommended/')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class IndianMealTemplateTests(TestCase):
+    """nutrition.indian_meals: real, scaled-to-target meal plans replacing
+    the fixed Western day totals in plans.Blueprint.meal_templates."""
+
+    def test_scaling_hits_target_calories_within_rounding(self):
+        template = TEMPLATES['VEG'][0]
+        scaled = scale_template(template, target_calories=2500, target_protein_g=150, diet_preference='VEG')
+        # Each meal is rounded independently, so the day total can drift by a
+        # few kcal from the exact target -- not more than a handful of kcal
+        # per meal (4 meals).
+        self.assertAlmostEqual(scaled['totals']['kcal'], 2500, delta=20)
+
+    def test_low_calorie_target_scales_down(self):
+        template = TEMPLATES['NON_VEG'][0]
+        scaled = scale_template(template, target_calories=1500, target_protein_g=100, diet_preference='NON_VEG')
+        self.assertLess(scaled['totals']['kcal'], template['reference_kcal'])
+
+    def test_protein_gap_triggers_boosters(self):
+        template = TEMPLATES['VEG'][0]
+        scaled = scale_template(template, target_calories=2200, target_protein_g=160, diet_preference='VEG')
+        self.assertGreater(scaled['protein_gap_g'], 0)
+        self.assertTrue(scaled['protein_boosters'])
+        self.assertNotIn('3-egg bhurji', [b['item'] for b in scaled['protein_boosters']])
+
+    def test_no_booster_needed_when_target_already_met(self):
+        template = TEMPLATES['NON_VEG'][0]
+        scaled = scale_template(template, target_calories=2325, target_protein_g=80, diet_preference='NON_VEG')
+        self.assertEqual(scaled['protein_gap_g'], 0)
+        self.assertEqual(scaled['protein_boosters'], [])
+
+    def test_meal_plan_options_returns_two_choices_per_diet_preference(self):
+        options = meal_plan_options(2200, 150, diet_preference='EGG')
+        self.assertEqual(len(options), 2)
+        self.assertTrue(all(o['diet_preference'] == 'EGG' for o in options))
+        self.assertEqual({o['id'] for o in options}, {'egg-a', 'egg-b'})
+
+    def test_no_diet_preference_returns_every_template(self):
+        options = meal_plan_options(2200, 150, diet_preference=None)
+        self.assertEqual(len(options), 6)  # 2 templates x 3 diet preferences
+
+    def test_unrecognised_diet_preference_falls_back_to_all(self):
+        options = meal_plan_options(2200, 150, diet_preference='VEGAN')
+        self.assertEqual(len(options), 6)
+
+
+class MealPlanOptionsViewTests(TestCase):
+    def test_returns_options_scaled_to_the_members_own_target(self):
+        user = make_user(fitness_goal='FAT_LOSS', diet_preference='EGG', **WORKBOOK_PROFILE)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/nutrition/meal-plan-options/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        body = res.json()
+        self.assertEqual(body['diet_preference'], 'EGG')
+        self.assertEqual(len(body['options']), 2)
+        for option in body['options']:
+            self.assertAlmostEqual(option['totals']['kcal'], body['target_calories'], delta=20)
+
+    def test_query_param_overrides_profile_preference(self):
+        user = make_user(diet_preference='VEG', **WORKBOOK_PROFILE)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/nutrition/meal-plan-options/?diet_preference=NON_VEG')
+        body = res.json()
+        self.assertEqual(body['diet_preference'], 'NON_VEG')
+        self.assertTrue(all(o['diet_preference'] == 'NON_VEG' for o in body['options']))
+
+    def test_falls_back_to_saved_target_when_profile_incomplete(self):
+        user = make_user()  # no height/weight/dob -> calculate_recommended_targets unavailable
+        MacroTarget.objects.create(user=user, daily_calories=2000, protein_g=120, carbs_g=200, fat_g=60)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/nutrition/meal-plan-options/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.json()['target_calories'], 2000)
 
 
 class FoodLoggingTests(TestCase):

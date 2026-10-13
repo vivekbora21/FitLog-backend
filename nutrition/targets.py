@@ -11,16 +11,15 @@ from django.utils import timezone
 
 from progress.models import WeightEntry
 from workouts.models import JourneyProgram, WorkoutSession
+from workouts.plan_engine.config import ACTIVITY_FACTOR_BY_LEVEL
 from .defaults import DEFAULT_MACRO_TARGETS, DEFAULT_LIFESTYLE_TARGETS
 from .models import MacroTarget, TargetHistory, TargetValues
 
-ACTIVITY_FACTORS = {
-    'SEDENTARY': 1.2,
-    'LIGHT': 1.375,
-    'MODERATE': 1.55,
-    'HIGH': 1.725,
-    'ATHLETE': 1.9,
-}
+# Single source of truth, shared with the plan engine
+# (workouts.plan_engine.config) so a member's reported activity level
+# produces the same TDEE here and in a generated plan's targets -- these
+# used to be two separate, silently-disagreeing copies of this table.
+ACTIVITY_FACTORS = ACTIVITY_FACTOR_BY_LEVEL
 
 # An active journey's mode is the most specific statement of intent, so it wins
 # over the coarser profile fitness_goal.

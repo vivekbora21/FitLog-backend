@@ -86,32 +86,28 @@ MODE_SAFE_THRESHOLD_KG_PER_WEEK = {
 }
 
 
-def activity_level_from_days_per_week(days_per_week):
-    if days_per_week <= 2:
-        return 'LIGHT'
-    if days_per_week <= 4:
-        return 'MODERATE'
-    if days_per_week <= 6:
-        return 'HIGH'
-    return 'ATHLETE'
-
-
 def calculate_targets(*, weight_kg, height_cm, age_years, sex, days_per_week, mode,
-                       duration_days, goal_weight_kg=None, weekdays=None):
+                       duration_days, goal_weight_kg=None, weekdays=None, activity_level=None):
     """Thin wrapper around the plan_engine (spec v1.6 section 4) -- see
     `.engine_adapter.legacy_shaped_targets` for the exact field mapping.
-    `activity_level` is a cosmetic LIGHT/MODERATE/HIGH/ATHLETE label only
-    (`activity_level_from_days_per_week`, unchanged); the actual TDEE now
-    uses the engine's own days-per-week activity factor table
-    (plan_engine.config.ACTIVITY_FACTOR_BY_DAYS_PER_WEEK), not this label.
+
+    `activity_level` (SEDENTARY/LIGHT/MODERATE/HIGH/ATHLETE, matching
+    `users.UserProfile.activity_level`) now drives the engine's real TDEE
+    multiplier (`plan_engine.config.ACTIVITY_FACTOR_BY_LEVEL`). Previously
+    this function returned a cosmetic LIGHT/MODERATE/HIGH/ATHLETE label
+    derived purely from `days_per_week` (`activity_level_from_days_per_week`,
+    now removed) while the actual TDEE used a *different*, days_per_week-only
+    table -- the two never agreed with the real activity level a user might
+    report elsewhere in the app (e.g. `nutrition.targets`). Defaults to
+    MODERATE when omitted, same as the engine itself.
     """
     _, _, serialized = engine_adapter.compute_mode_targets(
         mode=mode, weight_kg=weight_kg, height_cm=height_cm, age_years=age_years,
         sex=sex, days_per_week=days_per_week, duration_days=duration_days,
-        goal_weight_kg=goal_weight_kg, weekdays=weekdays,
+        goal_weight_kg=goal_weight_kg, weekdays=weekdays, activity_level=activity_level,
     )
     result = engine_adapter.legacy_shaped_targets(serialized)
-    result['activity_level'] = activity_level_from_days_per_week(days_per_week)
+    result['activity_level'] = (activity_level or 'MODERATE').upper()
     return result
 
 
@@ -368,6 +364,7 @@ def generate_roadmap(blueprint, user_inputs, training_split=None, muscle_group_b
         # request (`user_inputs`, i.e. the serializer's validated_data).
         experience=experience,
         equipment=user_inputs.get('equipment_level'),
+        activity_level=user_inputs.get('activity_level'),
         recomp_direction=user_inputs.get('recomp_direction'),
         calorie_override=user_inputs.get('calorie_override'),
         macro_override=user_inputs.get('macro_override'),

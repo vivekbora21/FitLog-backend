@@ -20,7 +20,7 @@ MAX_AGE_YEARS = 120
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ['id', 'date_of_birth', 'height_cm', 'weight_kg', 'sex', 'activity_level', 'fitness_goal', 'unit_preference', 'timezone', 'bio']
+        fields = ['id', 'date_of_birth', 'height_cm', 'weight_kg', 'sex', 'activity_level', 'fitness_goal', 'diet_preference', 'unit_preference', 'timezone', 'bio']
 
     def validate_timezone(self, value):
         from zoneinfo import ZoneInfo

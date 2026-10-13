@@ -46,6 +46,14 @@ class UserProfile(UUIDTimeStampedModel):
         ('IMPERIAL', 'Imperial (lbs / inches)'),
     ]
 
+    # Drives which food templates nutrition.indian_meals offers (see that
+    # module); independent of fitness_goal/activity_level.
+    DIET_CHOICES = [
+        ('VEG', 'Vegetarian'),
+        ('EGG', 'Eggetarian (veg + eggs)'),
+        ('NON_VEG', 'Non-vegetarian'),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     date_of_birth = models.DateField(null=True, blank=True)
     height_cm = models.FloatField(null=True, blank=True, validators=[MinValueValidator(50), MaxValueValidator(250)])
@@ -53,6 +61,7 @@ class UserProfile(UUIDTimeStampedModel):
     sex = models.CharField(max_length=10, choices=SEX_CHOICES, blank=True, default='')
     activity_level = models.CharField(max_length=15, choices=ACTIVITY_CHOICES, default='MODERATE')
     fitness_goal = models.CharField(max_length=30, choices=GOAL_CHOICES, default='HYPERTROPHY')
+    diet_preference = models.CharField(max_length=10, choices=DIET_CHOICES, default='VEG')
     unit_preference = models.CharField(max_length=15, choices=UNIT_CHOICES, default='METRIC')
     timezone = models.CharField(max_length=64, default='UTC')
     bio = models.TextField(blank=True, default='')

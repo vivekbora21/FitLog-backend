@@ -3,6 +3,7 @@ from django.db import transaction, IntegrityError
 from datetime import timedelta
 from django.utils import timezone
 from .progression import progression_for, WORKING_SET_TYPES
+from .calories import profile_calorie_inputs
 from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, WorkoutExercise, WorkoutSet, ProgramDay, CardioEntry, JourneyProgram, ProgramDayExerciseSwap
 from exercises.models import Exercise
 from exercises.serializers import ExerciseSerializer
@@ -56,11 +57,12 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         return getattr(obj, '_new_prs', [])
 
     @staticmethod
-    def _create_exercises(session, exercises_data, weight_kg, user, track_prs):
+    def _create_exercises(session, exercises_data, user, track_prs):
         """Creates WorkoutExercise/WorkoutSet rows in bulk (instead of one INSERT per row —
         a 15-exercise/60-set session used to cost 150+ queries), estimating calories
         up front since PKs are client-generated UUIDs and need no round trip to know.
         Returns (new_prs, cardio sets grouped for the cardio-entry sync)."""
+        weight_kg, age, sex = profile_calorie_inputs(user)
         all_sets_data = []  # (sets_data, exercise) per exercise, in order
         workout_exercises = []
         for ex_data in exercises_data:
@@ -76,7 +78,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             for s_data in sets_data:
                 workout_set = WorkoutSet(workout_exercise=workout_exercise, **s_data)
                 if workout_set.calories is None:
-                    estimated = workout_set.estimate_calories(weight_kg)
+                    estimated = workout_set.estimate_calories(weight_kg, age, sex)
                     if estimated is not None:
                         workout_set.calories = estimated
                 all_sets.append(workout_set)
@@ -232,9 +234,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                 if existing:
                     return existing
             raise
-        weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
-
-        new_prs, cardio_candidates = self._create_exercises(session, exercises_data, weight_kg, user, track_prs=True)
+        new_prs, cardio_candidates = self._create_exercises(session, exercises_data, user, track_prs=True)
         session._new_prs = new_prs
         self._sync_cardio_entry(session, user, cardio_candidates)
 
@@ -301,12 +301,11 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         instance.save()
 
         if exercises_data is not None:
-            weight_kg = getattr(getattr(instance.user, 'profile', None), 'weight_kg', None)
             affected = set(instance.exercises.values_list('exercise_id', flat=True))
             affected.update(ex_data['exercise'].id for ex_data in exercises_data if ex_data.get('exercise'))
             instance.exercises.all().delete()
 
-            _, cardio_candidates = self._create_exercises(instance, exercises_data, weight_kg, instance.user, track_prs=False)
+            _, cardio_candidates = self._create_exercises(instance, exercises_data, instance.user, track_prs=False)
             self._sync_cardio_entry(instance, instance.user, cardio_candidates)
             recompute_personal_records(instance.user, affected)
         elif 'started_at' in validated_data:
@@ -425,8 +424,7 @@ class CardioEntrySerializer(serializers.ModelSerializer):
 
     def _estimate_calories(self, instance):
         user = self.context['request'].user
-        weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
-        return instance.estimate_calories(weight_kg)
+        return instance.estimate_calories(*profile_calorie_inputs(user))
 
     def create(self, validated_data):
         instance = super().create(validated_data)

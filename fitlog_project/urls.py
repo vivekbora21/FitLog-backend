@@ -11,7 +11,7 @@ from gyms.views import GymViewSet
 from memberships.views import GymMembershipViewSet, TrainerClientViewSet, GymInvitationViewSet, AcceptInvitationView
 from exercises.views import ExerciseViewSet, MuscleGroupViewSet, EquipmentTypeViewSet
 from workouts.views import WorkoutSessionViewSet, RoutineViewSet, AssignedWorkoutViewSet, CardioEntryViewSet, CalorieBurnHistoryView
-from nutrition.views import NutritionDayView, MealEntryViewSet, MacroTargetView, FoodViewSet, RecommendedMacroTargetView, RecentFoodsView, RepeatYesterdayView, NutritionHistoryView
+from nutrition.views import NutritionDayView, MealEntryViewSet, MacroTargetView, FoodViewSet, RecommendedMacroTargetView, RecentFoodsView, RepeatYesterdayView, NutritionHistoryView, MealPlanOptionsView
 from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalRecordViewSet, DailyLogViewSet, ProgressPhotoViewSet
 from notifications.views import NotificationViewSet
 from core.views import AuditLogViewSet
@@ -59,6 +59,7 @@ urlpatterns = [
     path('api/invitations/<uuid:token>/accept/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('api/nutrition/macro-targets/', MacroTargetView.as_view(), name='macro_targets'),
     path('api/nutrition/macro-targets/recommended/', RecommendedMacroTargetView.as_view(), name='macro_targets_recommended'),
+    path('api/nutrition/meal-plan-options/', MealPlanOptionsView.as_view(), name='meal_plan_options'),
     path('api/nutrition/recent-foods/', RecentFoodsView.as_view(), name='recent_foods'),
     path('api/nutrition/repeat-yesterday/', RepeatYesterdayView.as_view(), name='repeat_yesterday'),
     path('api/nutrition/history/', NutritionHistoryView.as_view(), name='nutrition_history'),

@@ -8,7 +8,6 @@ from .models import Blueprint, TrainingSplit
 from .services.plan_generator import (
     EXPERIENCE_VOLUME_RANGES, MAJOR_MUSCLE_GROUPS, VOLUME_OUTSIDE_RANGE_CODE,
     calculate_targets, exercise_names_in_workout_templates, generate_roadmap,
-    activity_level_from_days_per_week,
 )
 from .services.exercise_lookup import muscle_group_by_exercise_name
 from .split_approval import (
@@ -57,14 +56,42 @@ def make_blueprint_stub(mode, duration_days=60, days_per_week=4):
 
 
 class ActivityLevelTests(TestCase):
-    def test_monotonic_buckets(self):
-        self.assertEqual(activity_level_from_days_per_week(1), 'LIGHT')
-        self.assertEqual(activity_level_from_days_per_week(2), 'LIGHT')
-        self.assertEqual(activity_level_from_days_per_week(3), 'MODERATE')
-        self.assertEqual(activity_level_from_days_per_week(4), 'MODERATE')
-        self.assertEqual(activity_level_from_days_per_week(5), 'HIGH')
-        self.assertEqual(activity_level_from_days_per_week(6), 'HIGH')
-        self.assertEqual(activity_level_from_days_per_week(7), 'ATHLETE')
+    """`activity_level` now drives the engine's real TDEE multiplier
+    (plan_engine.config.ACTIVITY_FACTOR_BY_LEVEL) instead of a cosmetic
+    label derived from days_per_week -- the previous
+    `activity_level_from_days_per_week` bucketing is gone; two users with
+    the same days_per_week but different real activity levels must now get
+    different TDEE/calories."""
+
+    def _tdee(self, activity_level):
+        result = calculate_targets(
+            weight_kg=80, height_cm=180, age_years=30, sex='MALE',
+            days_per_week=4, mode='FOCUS', duration_days=30,
+            activity_level=activity_level,
+        )
+        return result['tdee']
+
+    def test_activity_level_changes_tdee_at_fixed_training_frequency(self):
+        sedentary = self._tdee('SEDENTARY')
+        moderate = self._tdee('MODERATE')
+        athlete = self._tdee('ATHLETE')
+        self.assertLess(sedentary, moderate)
+        self.assertLess(moderate, athlete)
+
+    def test_default_activity_level_is_moderate(self):
+        self.assertEqual(self._tdee(None), self._tdee('MODERATE'))
+
+    def test_moderate_four_days_matches_pre_fix_sample_case(self):
+        # Spec v1.6's worked example (male, 4 days/week, BMR 1705.5) expects
+        # activity_factor 1.55 / tdee ~2643.5 -- MODERATE's factor is 1.55,
+        # so the default case is unchanged by this fix. `tdee` here is
+        # already serialized/rounded to an int (2643.525 -> 2644).
+        result = calculate_targets(
+            weight_kg=76.3, height_cm=174, age_years=30, sex='MALE',
+            days_per_week=4, mode='FOCUS', duration_days=30,
+            activity_level='MODERATE',
+        )
+        self.assertEqual(result['tdee'], 2644)
 
 
 class CalculateTargetsTests(TestCase):
@@ -496,6 +523,61 @@ class PlanApiTests(TestCase):
         # show a concrete "N days needed" the Review screen can render.
         self.assertIsNotNone(engine['days_needed'])
         self.assertIsNone(engine['override_source'])
+
+
+class PlanOptionsApiTests(TestCase):
+    """`/api/plans/options/`: "choose from multiple" -- one full preview per
+    approved (days_per_week, split) combination, instead of `preview`'s
+    single first-match blueprint/split."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email='options@example.com', username='optionsuser', password='testpassword123')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        from django.core.management import call_command
+        call_command('seed_blueprints')
+        call_command('seed_training_splits')
+
+    def valid_payload(self, **overrides):
+        payload = dict(
+            mode='CUT', duration_days=60, current_weight_kg=85, goal_weight_kg=80,
+            height_cm=180, age=28, sex='MALE',
+        )
+        payload.update(overrides)
+        return payload
+
+    def test_full_gym_returns_one_option_per_approved_days_per_week(self):
+        response = self.client.post('/api/plans/options/', self.valid_payload(), format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        options = response.data['options']
+        # full_gym approves one split each at 3/4/5/6 days/week (split_approval.py).
+        self.assertEqual({o['days_per_week'] for o in options}, {3, 4, 5, 6})
+        self.assertEqual({o['split_slug'] for o in options}, {
+            'full-body', 'upper-lower', 'bro-split', 'push-pull-legs',
+        })
+        for option in options:
+            self.assertIn('summary', option)
+            self.assertIn('engine', option)
+
+    def test_minimal_equipment_excludes_bro_split(self):
+        response = self.client.post(
+            '/api/plans/options/', self.valid_payload(equipment_level='minimal'), format='json'
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        slugs = {o['split_slug'] for o in response.data['options']}
+        # bro-split is full_gym-only (split_approval.py decision 2).
+        self.assertNotIn('bro-split', slugs)
+        self.assertEqual(slugs, {'full-body', 'upper-lower', 'push-pull-legs'})
+
+    def test_missing_goal_weight_for_cut_is_rejected(self):
+        payload = self.valid_payload()
+        del payload['goal_weight_kg']
+        response = self.client.post('/api/plans/options/', payload, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_options_do_not_persist_anything(self):
+        self.client.post('/api/plans/options/', self.valid_payload(), format='json')
+        self.assertEqual(JourneyProgram.objects.count(), 0)
 
 
 class SplitApprovalConfigTests(TestCase):

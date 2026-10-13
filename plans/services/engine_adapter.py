@@ -18,7 +18,7 @@ newly-created ``JourneyProgram`` (spec v1.6 section 7.1).
 import dataclasses
 
 from workouts.plan_engine.domain import (
-    Equipment, Experience, MacroOverride, Mode, PlanInputs, RecompDirection,
+    ActivityLevel, Equipment, Experience, MacroOverride, Mode, PlanInputs, RecompDirection,
 )
 from workouts.plan_engine.engine import compute_plan_targets
 from workouts.plan_engine.serialization import serialize_plan_targets
@@ -44,6 +44,9 @@ MODE_MAP = {
 # would have made V-15 unreachable through this adapter.
 _DEFAULT_EXPERIENCE = Experience.INTERMEDIATE
 _DEFAULT_EQUIPMENT = Equipment.FULL_GYM
+# Matches users.UserProfile.activity_level's own default, and the value
+# PlanInputs.activity_level itself falls back to -- see domain.py.
+_DEFAULT_ACTIVITY_LEVEL = ActivityLevel.MODERATE
 
 # Human-readable text for the subset of engine message codes most likely to
 # reach a plans/ caller through the legacy `warnings: List[str]` shape.
@@ -105,6 +108,22 @@ def _engine_equipment(equipment_level):
         return Equipment(str(equipment_level).lower())
     except ValueError:
         return _DEFAULT_EQUIPMENT
+
+
+def _engine_activity_level(activity_level):
+    """`plans/`' `activity_level` is submitted upper-case, matching
+    `users.UserProfile.ACTIVITY_CHOICES` exactly -- `ActivityLevel`'s own
+    values are already that same upper-case vocabulary (domain.py), so this
+    is mostly a defensive `None`/unrecognised -> `_DEFAULT_ACTIVITY_LEVEL`
+    fallback, same pattern as `_engine_equipment`."""
+    if isinstance(activity_level, ActivityLevel):
+        return activity_level
+    if not activity_level:
+        return _DEFAULT_ACTIVITY_LEVEL
+    try:
+        return ActivityLevel(str(activity_level).upper())
+    except ValueError:
+        return _DEFAULT_ACTIVITY_LEVEL
 
 
 def _engine_recomp_direction(recomp_direction):
@@ -176,7 +195,7 @@ def _message_text(message):
 
 def build_plan_inputs(*, mode, weight_kg, height_cm, age_years, sex, days_per_week,
                        duration_days, goal_weight_kg=None, weekdays=None,
-                       experience=None, equipment=None,
+                       experience=None, equipment=None, activity_level=None,
                        recomp_direction=None, calorie_override=None,
                        macro_override=None, override_for_mode=None, split_id=None):
     """Builds a `PlanInputs` from the plain kwargs `plans/` has on hand."""
@@ -192,6 +211,7 @@ def build_plan_inputs(*, mode, weight_kg, height_cm, age_years, sex, days_per_we
         training_weekdays=_engine_training_weekdays(weekdays, days_per_week),
         experience=_engine_experience(experience),
         equipment=_engine_equipment(equipment),
+        activity_level=_engine_activity_level(activity_level),
         recomp_direction=_engine_recomp_direction(recomp_direction),
         calorie_override=calorie_override,
         macro_override=_engine_macro_override(macro_override),

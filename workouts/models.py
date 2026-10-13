@@ -2,6 +2,7 @@ from django.db import models
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from core.models import UUIDTimeStampedModel
+from .calories import estimate_cardio_calories
 
 class Routine(UUIDTimeStampedModel):
     name = models.CharField(max_length=150)
@@ -214,13 +215,21 @@ class CardioEntry(UUIDTimeStampedModel):
                    'so summing both would double-count).'
     )
 
-    def estimate_calories(self, weight_kg):
-        """MET-based estimate for a standalone cardio entry (no linked Exercise to
-        pull a MET value from, so modality maps to an approximate MET constant)."""
-        if not weight_kg or not self.duration_minutes:
-            return None
-        met_value = self.MODALITY_MET_VALUES.get(self.modality, self.MODALITY_MET_VALUES['OTHER'])
-        return round(met_value * weight_kg * (self.duration_minutes / 60))
+    def estimate_calories(self, weight_kg, age=None, sex=None):
+        """Estimate for a standalone cardio entry (no linked Exercise to pull a MET
+        value from, so modality maps to an approximate MET constant). Uses heart
+        rate and intensity when logged — see workouts/calories.py."""
+        result = estimate_cardio_calories(
+            name=self.modality,
+            met_value=self.MODALITY_MET_VALUES.get(self.modality, self.MODALITY_MET_VALUES['OTHER']),
+            duration_minutes=self.duration_minutes,
+            intensity=self.intensity,
+            heart_rate=self.heart_rate,
+            weight_kg=weight_kg,
+            age=age,
+            sex=sex,
+        )
+        return result[0] if result else None
 
 class AssignedWorkout(UUIDTimeStampedModel):
     STATUS_CHOICES = [
@@ -374,20 +383,32 @@ class WorkoutSet(UUIDTimeStampedModel):
     def volume_kg(self):
         return round(self.weight_kg * self.reps, 1) if self.completed else 0.0
 
-    def estimate_calories(self, weight_kg):
+    def estimate_calories(self, weight_kg, age=None, sex=None):
         """Server-side calorie estimate for when the client didn't supply one.
-        Cardio sets use their logged duration; strength sets fall back to an
-        average 3 seconds of time-under-tension per rep, since no duration is
-        logged for them."""
+        Cardio (timed) sets are estimated from what was logged — heart rate,
+        speed/incline, or intensity zone (see workouts/calories.py); strength sets
+        fall back to an average 3 seconds of time-under-tension per rep, since no
+        duration is logged for them."""
         exercise = self.workout_exercise.exercise
-        if exercise.met_value is None or not weight_kg:
+        if not weight_kg:
             return None
         if self.duration_seconds:
-            duration_minutes = self.duration_seconds / 60
-        elif self.reps:
-            duration_minutes = (self.reps * 3) / 60
-        else:
+            result = estimate_cardio_calories(
+                name=exercise.name,
+                met_value=exercise.met_value,
+                duration_minutes=self.duration_seconds / 60,
+                speed_kmh=self.speed_kmh,
+                incline_percent=self.incline_percent,
+                intensity=self.intensity,
+                heart_rate=self.heart_rate,
+                weight_kg=weight_kg,
+                age=age,
+                sex=sex,
+            )
+            return result[0] if result else None
+        if exercise.met_value is None or not self.reps:
             return None
+        duration_minutes = (self.reps * 3) / 60
         estimated = exercise.estimated_calories_burned(weight_kg, duration_minutes)
         return round(estimated) if estimated is not None else None
 

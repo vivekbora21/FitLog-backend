@@ -48,15 +48,12 @@ def _bmr(sex: str, weight_kg: float, height_cm: float, age: int) -> float:
     return base + 5 if sex == "male" else base - 161
 
 
-def _activity_factor(days_per_week: int) -> float:
-    table = config.ACTIVITY_FACTOR_BY_DAYS_PER_WEEK
-    if days_per_week in table:
-        return table[days_per_week]
-    # Defensive fallback for an out-of-range days_per_week (already flagged
-    # block by V-03): clamp to the nearest defined key so bmr/tdee can
-    # still be returned in the response instead of raising.
-    clamped = min(max(days_per_week, min(table)), max(table))
-    return table[clamped]
+def _activity_factor(activity_level) -> float:
+    table = config.ACTIVITY_FACTOR_BY_LEVEL
+    key = activity_level.value if hasattr(activity_level, "value") else str(activity_level)
+    # Defensive fallback for an unrecognised value: MODERATE, the same
+    # default PlanInputs.activity_level itself falls back to.
+    return table.get(key, table["MODERATE"])
 
 
 def _pace_band(mode: Mode) -> dict:
@@ -253,7 +250,7 @@ def compute_plan_targets(inputs: PlanInputs) -> PlanTargets:
     # 4.1 BMR / TDEE
     # ---------------------------------------------------------------
     bmr = _bmr(sex, weight, height, age)
-    activity_factor = _activity_factor(days_per_week)
+    activity_factor = _activity_factor(inputs.activity_level)
     tdee = bmr * activity_factor
 
     # ---------------------------------------------------------------

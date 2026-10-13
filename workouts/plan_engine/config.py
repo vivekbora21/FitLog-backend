@@ -16,11 +16,21 @@ from .domain import Mode, RecompDirection
 ENGINE_VERSION = "1.0.0"
 
 # --- 4.1 Energy expenditure ---------------------------------------------
-ACTIVITY_FACTOR_BY_DAYS_PER_WEEK = {
-    3: 1.50,
-    4: 1.55,
-    5: 1.60,
-    6: 1.65,
+# Single source of truth for the BMR->TDEE multiplier, shared with
+# nutrition.targets.ACTIVITY_FACTORS (that module imports this dict rather
+# than keeping its own copy, so the two calorie systems can no longer
+# disagree). Keyed by the user's actual lifestyle activity
+# (domain.ActivityLevel), not by days_per_week -- training frequency and
+# how active someone's day job/life is are different things, and
+# conflating them meant two users training the same number of days got
+# identical TDEE regardless of how sedentary or active the rest of their
+# week was.
+ACTIVITY_FACTOR_BY_LEVEL = {
+    "SEDENTARY": 1.2,
+    "LIGHT": 1.375,
+    "MODERATE": 1.55,
+    "HIGH": 1.725,
+    "ATHLETE": 1.9,
 }
 
 # --- 4.2 Energy constant --------------------------------------------------

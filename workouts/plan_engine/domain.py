@@ -34,6 +34,25 @@ class Equipment(str, Enum):
     MINIMAL = "minimal"
 
 
+class ActivityLevel(str, Enum):
+    """Daily-life/lifestyle activity, independent of training days per week.
+
+    Values match the vocabulary already used by ``users.UserProfile
+    .activity_level`` and ``nutrition.targets.ACTIVITY_FACTORS`` (uppercase,
+    not the lowercase convention the other engine enums use) so the three
+    systems share one set of literal values with no translation table
+    needed anywhere. See config.ACTIVITY_FACTOR_BY_LEVEL for the TDEE
+    multiplier each one maps to -- the single source both this engine and
+    the nutrition app read from.
+    """
+
+    SEDENTARY = "SEDENTARY"
+    LIGHT = "LIGHT"
+    MODERATE = "MODERATE"
+    HIGH = "HIGH"
+    ATHLETE = "ATHLETE"
+
+
 class RecompDirection(str, Enum):
     LEAN_OUT = "lean_out"
     MAINTAIN = "maintain"
@@ -89,6 +108,15 @@ class PlanInputs:
     training_weekdays: List[int]            # 0=Mon .. 6=Sun, len == days_per_week
     experience: Experience
     equipment: Equipment
+    # Real lifestyle-activity signal (section 4.1 fix): previously the
+    # engine derived its TDEE activity factor purely from days_per_week,
+    # which meant a desk-bound user and a very-active one who both train 4
+    # days/week got an identical TDEE. Defaults to MODERATE, which
+    # reproduces the old days_per_week=4 -> 1.55 figure exactly, so any
+    # caller that hasn't been updated to send a real value yet sees no
+    # change for that one combination (every other combination is now
+    # computed from real data instead of a days_per_week guess).
+    activity_level: ActivityLevel = ActivityLevel.MODERATE
     recomp_direction: Optional[RecompDirection] = None   # only used when mode == RECOMP
     calorie_override: Optional[int] = None
     macro_override: Optional[MacroOverride] = None

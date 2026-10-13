@@ -257,7 +257,20 @@ class CaseDPrimeTests(unittest.TestCase):
 
 
 class CaseETests(unittest.TestCase):
-    """Case E: female, 35, 165cm, 62kg, 3 days, Cut 56 days, goal 56.0."""
+    """Case E: female, 35, 165cm, 62kg, 3 days, Cut 56 days, goal 56.0.
+
+    Activity-level fix: `make_inputs`/`PlanInputs` no longer derive the TDEE
+    multiplier from `days_per_week` (that conflated training frequency with
+    how active someone's day actually is -- see domain.PlanInputs
+    .activity_level and config.ACTIVITY_FACTOR_BY_LEVEL). This case doesn't
+    override `activity_level`, so it now uses the default, MODERATE (1.55)
+    -- a higher multiplier than the old days_per_week=3 -> 1.50 table gave,
+    which raises this case's TDEE enough that it no longer hits the female
+    calorie floor and reaches its goal within the 56-day window (previously
+    it both clamped to the floor *and* fell short of the goal). The
+    before/after numbers are intentionally different; this is the fix
+    working as intended, not drift.
+    """
 
     def setUp(self):
         self.inputs = make_inputs(
@@ -276,25 +289,29 @@ class CaseETests(unittest.TestCase):
 
     def test_bmr_and_tdee(self):
         self.assertAlmostEqual(self.result.bmr, 1315.25, places=6)
-        self.assertEqual(self.serialized["tdee"], 1973)
+        self.assertEqual(self.serialized["tdee"], 2039)
 
-    def test_clamped_to_female_floor(self):
-        self.assertTrue(self.result.calories_clamped)
-        self.assertEqual(self.serialized["target_calories"], 1200)
-        self.assertIn("CALORIES_RAISED_TO_FLOOR", codes(self.result))
+    def test_not_clamped_at_moderate_activity(self):
+        self.assertFalse(self.result.calories_clamped)
+        self.assertEqual(self.serialized["target_calories"], 1210)
+        self.assertNotIn("CALORIES_RAISED_TO_FLOOR", codes(self.result))
 
     def test_weekly_and_end_weight(self):
-        self.assertAlmostEqual(self.serialized["predicted_weekly_change_kg"], -0.703, places=3)
-        self.assertAlmostEqual(self.serialized["projected_end_weight_kg"], 56.379, places=3)
-        self.assertAlmostEqual(round(self.serialized["projected_end_weight_kg"], 1), 56.4)
+        self.assertAlmostEqual(self.serialized["predicted_weekly_change_kg"], -0.753, places=3)
+        self.assertAlmostEqual(self.serialized["projected_end_weight_kg"], 55.974, places=3)
+        self.assertAlmostEqual(round(self.serialized["projected_end_weight_kg"], 1), 56.0)
 
     def test_pace_aggressive(self):
-        self.assertAlmostEqual(self.serialized["weekly_change_pct_bodyweight"], 1.13, places=2)
+        self.assertAlmostEqual(self.serialized["weekly_change_pct_bodyweight"], 1.22, places=2)
         self.assertEqual(self.result.pace_status, "aggressive")
 
-    def test_goal_not_reached_and_days_needed(self):
-        self.assertIn("GOAL_NOT_REACHED_IN_TIME", codes(self.result))
-        self.assertEqual(self.result.days_needed, 60)
+    def test_goal_reached_within_duration(self):
+        # Previously fell 0.38kg short of the goal and needed 60 days
+        # (GOAL_NOT_REACHED_IN_TIME); the higher, real-activity-level TDEE
+        # now lands within the 0.25kg tolerance in exactly the 56 requested
+        # days, so neither fires.
+        self.assertNotIn("GOAL_NOT_REACHED_IN_TIME", codes(self.result))
+        self.assertEqual(self.result.days_needed, 56)
 
     def test_clamp_consistency_property(self):
         tc = self.result.target_calories

@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from .models import MacroTarget, NutritionDay, MealEntry
 from .serializers import MacroTargetSerializer, NutritionDaySerializer, MealEntrySerializer, FoodSerializer, foods_visible_to
 from .targets import calculate_recommended_targets, get_or_create_macro_target, resolve_target_update, targets_payload, exercise_calories_today, TargetTimeline
+from .indian_meals import meal_plan_options, TEMPLATES
 from workouts.models import JourneyProgram
 
 # BUG-31: a client-supplied log date had no server-side bound at all — a manipulated
@@ -219,6 +220,42 @@ class RecommendedMacroTargetView(APIView):
             setattr(target, field, rec[field])
         target.save()
         return Response(MacroTargetSerializer(target).data)
+
+
+class MealPlanOptionsView(APIView):
+    """Real, Indian meal-plan options scaled to the member's own calorie/
+    protein target (`calculate_recommended_targets`, falling back to their
+    saved `MacroTarget` if the profile is incomplete) -- replaces the fixed
+    Western day totals baked into `plans.Blueprint.meal_templates`. Returns
+    every template for the requested diet preference (2 per preference) so
+    the member picks one, rather than being handed a single generated plan.
+
+    GET params: `diet_preference` (VEG/EGG/NON_VEG, optional -- defaults to
+    the member's profile value; omit entirely, including an unrecognised
+    value, to get options across all three)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        recommended = calculate_recommended_targets(request.user)
+        if recommended['available']:
+            target_calories = recommended['daily_calories']
+            target_protein_g = recommended['protein_g']
+        else:
+            target = get_or_create_macro_target(request.user)
+            target_calories = target.daily_calories
+            target_protein_g = target.protein_g
+
+        diet_preference = request.query_params.get('diet_preference')
+        if diet_preference not in TEMPLATES:
+            profile = getattr(request.user, 'profile', None)
+            diet_preference = profile.diet_preference if profile else None
+
+        return Response({
+            'target_calories': target_calories,
+            'target_protein_g': target_protein_g,
+            'diet_preference': diet_preference if diet_preference in TEMPLATES else None,
+            'options': meal_plan_options(target_calories, target_protein_g, diet_preference),
+        })
 
 
 class RecentFoodsView(APIView):

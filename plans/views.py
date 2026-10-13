@@ -8,13 +8,14 @@ from workouts.models import JourneyProgram, ProgramDay, Routine
 from .models import Blueprint, TrainingSplit
 from .serializers import (
     BlueprintSerializer, TrainingSplitSerializer,
-    PlanPreviewRequestSerializer, PlanCreateRequestSerializer,
+    PlanPreviewRequestSerializer, PlanCreateRequestSerializer, PlanOptionsRequestSerializer,
 )
 from .services import plan_generator
 from .services.exercise_lookup import muscle_group_by_exercise_name
 from .services.plan_generator import generate_roadmap
 from .split_approval import (
-    DEFAULT_EQUIPMENT_LEVEL, approved_combinations, approved_slugs_for, is_split_approved,
+    DAYS_TO_SPLIT_SLUGS, DEFAULT_EQUIPMENT_LEVEL, approved_combinations, approved_slugs_for,
+    is_split_approved,
 )
 
 NO_SUPPORTED_SPLIT_CODE = 'NO_SUPPORTED_SPLIT'
@@ -115,6 +116,53 @@ class PlanViewSet(viewsets.ViewSet):
 
         roadmap = self._generate_roadmap(blueprint, data, self._resolve_training_split(data))
         return Response(roadmap)
+
+    @action(detail=False, methods=['post'], url_path='options')
+    def options(self, request):
+        """"Choose from multiple" entry point: instead of the caller picking
+        one days_per_week/split up front (`preview`/`create` always resolve
+        to exactly one generated plan), this computes one full preview per
+        approved (days_per_week, split) combination at the member's
+        equipment level and mode, so the client can show them side by side
+        before the member commits to one via `create`."""
+        serializer = PlanOptionsRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+
+        mode = data['mode']
+        equipment_level = data.get('equipment_level') or DEFAULT_EQUIPMENT_LEVEL
+        blueprint = Blueprint.objects.filter(mode=mode, is_active=True).order_by('display_order', 'name').first()
+        if not blueprint:
+            return Response({'detail': 'No matching blueprint found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        options = []
+        for days_per_week, slugs in DAYS_TO_SPLIT_SLUGS.items():
+            for slug in slugs:
+                if not is_split_approved(slug, equipment_level):
+                    continue
+                split = TrainingSplit.objects.filter(slug=slug, is_active=True).first()
+                if not split:
+                    continue
+                option_inputs = {**data, 'days_per_week': days_per_week, 'split_slug': slug}
+                roadmap = self._generate_roadmap(blueprint, option_inputs, split)
+                options.append({
+                    'split_slug': slug,
+                    'split_name': split.name,
+                    'split_description': split.description,
+                    'days_per_week': days_per_week,
+                    'summary': roadmap['summary'],
+                    'engine': roadmap['engine'],
+                })
+
+        if not options:
+            return Response({
+                'can_start': False,
+                'code': NO_SUPPORTED_SPLIT_CODE,
+                'detail': f"No supported training split exists at '{equipment_level}' equipment.",
+                'supported_combinations': approved_combinations(),
+            }, status=status.HTTP_200_OK)
+        return Response({'mode': mode, 'equipment_level': equipment_level, 'options': options})
 
     @transaction.atomic
     def create(self, request):

@@ -1,5 +1,5 @@
 from datetime import timedelta
-from django.test import TestCase, TransactionTestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 from users.models import User, UserProfile
@@ -8,6 +8,7 @@ from .models import Routine, RoutineExercise, WorkoutSession, WorkoutExercise, W
 from gyms.models import Gym
 from memberships.models import GymMembership
 from .progression import parse_rep_range, progression_for
+from .calories import estimate_cardio_calories
 
 
 class ProgressionTestBase(TestCase):
@@ -516,6 +517,41 @@ class CardioEntrySyncTests(TestCase):
         res = self.client.put(f'/api/workouts/sessions/{session_id}/', self.payload(0, with_cardio=False), format='json')
         self.assertEqual(res.status_code, 200, res.data)
         self.assertFalse(CardioEntry.objects.filter(session_id=session_id).exists())
+
+
+class CardioCalorieEstimateTests(SimpleTestCase):
+    """Cardio calories are calculated from the logged workout rather than typed in."""
+
+    def estimate(self, **kwargs):
+        defaults = {'name': 'Treadmill Incline Walk', 'duration_minutes': 20, 'weight_kg': 80}
+        return estimate_cardio_calories(**{**defaults, **kwargs})
+
+    def test_incline_increases_treadmill_calories(self):
+        flat, method = self.estimate(speed_kmh=4.8, incline_percent=0)
+        steep, _ = self.estimate(speed_kmh=4.8, incline_percent=12)
+        self.assertEqual(method, 'speed_incline')
+        self.assertEqual((flat, steep), (92, 230))
+
+    def test_running_speed_uses_running_equation(self):
+        self.assertEqual(self.estimate(name='Treadmill Run', speed_kmh=10, duration_minutes=30), (442, 'speed_incline'))
+
+    def test_intensity_zone_scales_met_estimate(self):
+        zone2, method = self.estimate(name='Stationary Bike', met_value=6.8, duration_minutes=30, intensity='Zone 2')
+        hiit, _ = self.estimate(name='Stationary Bike', met_value=6.8, duration_minutes=30, intensity='HIIT / Max')
+        self.assertEqual(method, 'met')
+        self.assertEqual((zone2, hiit), (272, 394))
+
+    def test_heart_rate_used_when_age_and_sex_known(self):
+        self.assertEqual(
+            self.estimate(name='Rowing', duration_minutes=30, heart_rate=140, age=30, sex='MALE'),
+            (396, 'heart_rate'),
+        )
+        # Without age/sex the HR equation can't run, so it falls back.
+        self.assertEqual(self.estimate(name='Rowing', duration_minutes=30, heart_rate=140)[1], 'met')
+
+    def test_needs_weight_and_duration(self):
+        self.assertIsNone(self.estimate(weight_kg=None))
+        self.assertIsNone(self.estimate(duration_minutes=0))
 
 
 class StandaloneCardioCalorieTests(TestCase):

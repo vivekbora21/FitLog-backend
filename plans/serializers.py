@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from users.models import UserProfile
 from workouts.models import JourneyProgram
 from .models import Blueprint, TrainingSplit
 from .split_approval import EQUIPMENT_LEVELS, DEFAULT_EQUIPMENT_LEVEL
@@ -80,6 +81,17 @@ class PlanPreviewRequestSerializer(serializers.Serializer):
     experience = serializers.ChoiceField(
         choices=['BEGINNER', 'INTERMEDIATE', 'ADVANCED'], required=False, default='INTERMEDIATE'
     )
+    # New field: real lifestyle activity (desk job vs. on-your-feet vs.
+    # physically demanding), independent of training days per week -- drives
+    # the engine's TDEE multiplier (plan_engine.config.ACTIVITY_FACTOR_BY_LEVEL).
+    # Same choices as users.UserProfile.activity_level so a client can prefill
+    # this from the member's profile. Optional with a default of 'MODERATE',
+    # which reproduces the pre-fix days_per_week=4 TDEE figure exactly, so an
+    # existing caller that never sends this field sees no change at that one
+    # combination.
+    activity_level = serializers.ChoiceField(
+        choices=[c[0] for c in UserProfile.ACTIVITY_CHOICES], required=False, default='MODERATE'
+    )
     weekdays = serializers.ListField(
         child=serializers.IntegerField(min_value=1, max_value=7), required=False
     )
@@ -137,3 +149,39 @@ class PlanPreviewRequestSerializer(serializers.Serializer):
 
 class PlanCreateRequestSerializer(PlanPreviewRequestSerializer):
     name = serializers.CharField(required=False)
+
+
+class PlanOptionsRequestSerializer(serializers.Serializer):
+    """Input for `PlanViewSet.options` ("choose from multiple"): everything
+    `PlanPreviewRequestSerializer` needs EXCEPT `days_per_week`/`weekdays`/
+    `split_slug` -- the whole point of this endpoint is to compute one
+    option per approved (days_per_week, split) combination at the member's
+    equipment level, not take days_per_week as an input."""
+    mode = serializers.ChoiceField(choices=JourneyProgram.MODE_CHOICES)
+    duration_days = serializers.IntegerField(
+        min_value=JourneyProgram.MIN_DURATION_DAYS, max_value=JourneyProgram.MAX_DURATION_DAYS
+    )
+    equipment_level = serializers.ChoiceField(
+        choices=list(EQUIPMENT_LEVELS), required=False, default=DEFAULT_EQUIPMENT_LEVEL
+    )
+    experience = serializers.ChoiceField(
+        choices=['BEGINNER', 'INTERMEDIATE', 'ADVANCED'], required=False, default='INTERMEDIATE'
+    )
+    activity_level = serializers.ChoiceField(
+        choices=[c[0] for c in UserProfile.ACTIVITY_CHOICES], required=False, default='MODERATE'
+    )
+    current_weight_kg = serializers.FloatField()
+    goal_weight_kg = serializers.FloatField(required=False)
+    height_cm = serializers.FloatField()
+    age = serializers.IntegerField()
+    sex = serializers.ChoiceField(choices=['MALE', 'FEMALE'])
+    recomp_direction = serializers.ChoiceField(choices=RECOMP_DIRECTION_CHOICES, required=False)
+
+    def validate(self, attrs):
+        mode = attrs.get('mode')
+        goal_weight_kg = attrs.get('goal_weight_kg')
+        if mode in GOAL_WEIGHT_REQUIRED_MODES and goal_weight_kg is None:
+            raise serializers.ValidationError(
+                {'goal_weight_kg': f'goal_weight_kg is required for {mode} mode.'}
+            )
+        return attrs
