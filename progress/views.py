@@ -1,4 +1,5 @@
 from core.query_params import apply_date_range
+from django.db import transaction, IntegrityError
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -28,7 +29,23 @@ class WeightEntryViewSet(viewsets.ModelViewSet):
         return apply_date_range(WeightEntry.objects.filter(user=user), self.request, 'date').order_by('-date')
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        user = self.request.user
+        date_val = serializer.validated_data['date']
+        # A retried weigh-in write (same user, same date — the one-entry-per-day case an
+        # offline queue would hit on reconnect, or a user correcting today's weight by
+        # logging again) must not 500 on the unique(user, date) constraint. Upsert instead:
+        # the retry's values become the day's entry, same as if the first attempt had
+        # simply been edited afterward.
+        try:
+            with transaction.atomic():
+                serializer.save(user=user)
+        except IntegrityError:
+            existing = WeightEntry.objects.get(user=user, date=date_val)
+            for field in ('weight_kg', 'body_fat_pct', 'notes'):
+                if field in serializer.validated_data:
+                    setattr(existing, field, serializer.validated_data[field])
+            existing.save()
+            serializer.instance = existing
 
 class BodyMeasurementViewSet(viewsets.ModelViewSet):
     serializer_class = BodyMeasurementSerializer

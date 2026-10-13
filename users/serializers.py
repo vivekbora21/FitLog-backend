@@ -1,15 +1,65 @@
 import re
+from datetime import date
+from zoneinfo import available_timezones
 from django.contrib.auth import password_validation, authenticate
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone as django_timezone
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import User, UserProfile
 
+_VALID_TIMEZONES = available_timezones()
+
+# BUG-32: date of birth accepted any value — only format was checked, not plausibility,
+# on either client or server. Bounds are generous on purpose (a real 13-year-old athlete
+# and a real 100-year-old member should both pass) and only reject what can't be true.
+MIN_AGE_YEARS = 5
+MAX_AGE_YEARS = 120
+
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ['id', 'date_of_birth', 'height_cm', 'weight_kg', 'sex', 'activity_level', 'fitness_goal', 'unit_preference', 'bio']
+        fields = ['id', 'date_of_birth', 'height_cm', 'weight_kg', 'sex', 'activity_level', 'fitness_goal', 'unit_preference', 'timezone', 'bio']
+
+    def validate_timezone(self, value):
+        from zoneinfo import ZoneInfo
+        COMMON_TIMEZONE_ALIASES = {
+            'Asia/Calcutta': 'Asia/Kolkata',
+            'Asia/Katmandu': 'Asia/Kathmandu',
+            'Asia/Saigon': 'Asia/Ho_Chi_Minh',
+            'US/Eastern': 'America/New_York',
+            'US/Central': 'America/Chicago',
+            'US/Mountain': 'America/Denver',
+            'US/Pacific': 'America/Los_Angeles',
+        }
+        canonical = COMMON_TIMEZONE_ALIASES.get(value, value)
+        try:
+            ZoneInfo(canonical)
+            return canonical
+        except Exception:
+            pass
+        if canonical in available_timezones():
+            return canonical
+        raise serializers.ValidationError('Unknown IANA timezone name.')
+
+    def validate_date_of_birth(self, value):
+        if value is None:
+            return value
+        today = django_timezone.localdate()
+        if value > today:
+            raise serializers.ValidationError('Date of birth cannot be in the future.')
+
+        def years_ago(years):
+            try:
+                return today.replace(year=today.year - years)
+            except ValueError:
+                return today.replace(year=today.year - years, day=28)  # Feb 29 in a non-leap year
+
+        earliest, latest = years_ago(MAX_AGE_YEARS), years_ago(MIN_AGE_YEARS)
+        if value < earliest or value > latest:
+            raise serializers.ValidationError(f'Please enter a plausible date of birth (age {MIN_AGE_YEARS}-{MAX_AGE_YEARS}).')
+        return value
 
 class UserSerializer(serializers.ModelSerializer):
     profile = UserProfileSerializer(read_only=True)

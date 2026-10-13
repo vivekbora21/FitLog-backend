@@ -2,8 +2,93 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
 from datetime import date
-from users.models import User
+from users.models import User, UserProfile
 from progress.models import BodyMeasurement
+
+
+class WeightHeightValidationTests(TestCase):
+    """BUG-21: weight/height accepted negative, zero, or absurd values end-to-end,
+    silently corrupting downstream BMI/TDEE calculations."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(email='bounds@example.com', username='bounds', password='testpassword123')
+        self.client.force_authenticate(self.user)
+
+    def test_negative_weigh_in_is_rejected(self):
+        res = self.client.post('/api/progress/weight/', {'date': '2026-01-01', 'weight_kg': -70}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_zero_weigh_in_is_rejected(self):
+        res = self.client.post('/api/progress/weight/', {'date': '2026-01-01', 'weight_kg': 0}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_absurd_weigh_in_is_rejected(self):
+        res = self.client.post('/api/progress/weight/', {'date': '2026-01-01', 'weight_kg': 5000}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_plausible_weigh_in_is_accepted(self):
+        res = self.client.post('/api/progress/weight/', {'date': '2026-01-01', 'weight_kg': 82.5}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_profile_rejects_negative_and_absurd_height_and_weight(self):
+        res = self.client.patch('/api/auth/me/', {'profile': {'height_cm': -5}}, format='json')
+        self.assertEqual(res.status_code, 400)
+        res = self.client.patch('/api/auth/me/', {'profile': {'height_cm': 0}}, format='json')
+        self.assertEqual(res.status_code, 400)
+        res = self.client.patch('/api/auth/me/', {'profile': {'height_cm': 900}}, format='json')
+        self.assertEqual(res.status_code, 400)
+        res = self.client.patch('/api/auth/me/', {'profile': {'weight_kg': -1}}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_profile_accepts_plausible_height_and_weight(self):
+        res = self.client.patch('/api/auth/me/', {'profile': {'height_cm': 178, 'weight_kg': 82.5}}, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_profile_rejects_future_date_of_birth(self):
+        res = self.client.patch('/api/auth/me/', {'profile': {'date_of_birth': '2099-01-01'}}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_profile_rejects_implausibly_old_date_of_birth(self):
+        res = self.client.patch('/api/auth/me/', {'profile': {'date_of_birth': '1850-01-01'}}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_profile_rejects_implausibly_young_date_of_birth(self):
+        from datetime import date
+        too_young = date.today().replace(year=date.today().year - 1)
+        res = self.client.patch('/api/auth/me/', {'profile': {'date_of_birth': too_young.isoformat()}}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_profile_accepts_plausible_date_of_birth(self):
+        res = self.client.patch('/api/auth/me/', {'profile': {'date_of_birth': '1995-06-15'}}, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+
+
+class WeightEntryRetryTests(TestCase):
+    """A retried weigh-in write (BUG-11 offline-queue support: same user, same date) must
+    not 500 on the unique(user, date) constraint — it should upsert instead."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(email='weightretry@example.com', username='weightretry', password='testpassword123')
+        self.client.force_authenticate(self.user)
+
+    def test_retried_weigh_in_same_date_upserts_instead_of_500(self):
+        res1 = self.client.post('/api/progress/weight/', {'date': '2026-02-05', 'weight_kg': 80}, format='json')
+        self.assertEqual(res1.status_code, 201, res1.data)
+        res2 = self.client.post('/api/progress/weight/', {'date': '2026-02-05', 'weight_kg': 81.5}, format='json')
+        self.assertEqual(res2.status_code, 201, res2.data)
+        self.assertEqual(res1.data['id'], res2.data['id'])
+        self.assertEqual(self.user.weight_entries.count(), 1)
+        self.assertEqual(self.user.weight_entries.get().weight_kg, 81.5)
+
+    def test_exact_retry_with_identical_payload_is_a_no_op(self):
+        res1 = self.client.post('/api/progress/weight/', {'date': '2026-02-06', 'weight_kg': 75, 'notes': 'morning'}, format='json')
+        res2 = self.client.post('/api/progress/weight/', {'date': '2026-02-06', 'weight_kg': 75, 'notes': 'morning'}, format='json')
+        self.assertEqual(res2.status_code, 201, res2.data)
+        self.assertEqual(res1.data['id'], res2.data['id'])
+        self.assertEqual(self.user.weight_entries.count(), 1)
+
 
 class BodyMeasurementTests(TestCase):
     def setUp(self):

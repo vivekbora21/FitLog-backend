@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.db import models
+from django.utils import timezone
 from django.conf import settings
 from core.models import UUIDTimeStampedModel
 from .defaults import DEFAULT_MACRO_TARGETS, DEFAULT_LIFESTYLE_TARGETS
@@ -65,7 +66,7 @@ class TargetHistory(UUIDTimeStampedModel, TargetValues):
 
     @classmethod
     def record(cls, user, values, day=None):
-        day = day or date.today()
+        day = day or timezone.localdate()
         latest = cls.objects.filter(user=user, effective_from__lte=day).order_by('-effective_from').first()
         if latest and latest.values() == values:
             return latest
@@ -161,9 +162,21 @@ class MealEntry(UUIDTimeStampedModel):
     carbs_g = models.FloatField(default=0.0)
     fat_g = models.FloatField(default=0.0)
     time_logged = models.TimeField(auto_now_add=True)
+    # Client-generated token so a retried "log this meal" write (offline queue retry,
+    # request timeout + resend) is a no-op instead of creating a duplicate entry. Scoped
+    # to the day rather than the user: a retry always resolves to the same NutritionDay
+    # since it resends the same date, and MealEntry has no direct user FK to scope on.
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         ordering = ['time_logged']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['nutrition_day', 'idempotency_key'],
+                name='unique_meal_idempotency_key_per_day',
+                condition=models.Q(idempotency_key__isnull=False),
+            )
+        ]
 
     @property
     def quantity(self):

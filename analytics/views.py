@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions, status
@@ -17,7 +18,7 @@ class DashboardStatsView(APIView):
 
     def get(self, request):
         user = request.user
-        today = date.today()
+        today = timezone.localdate()
         start_of_week = today - timedelta(days=today.weekday())
         start_of_month = today.replace(day=1)
         ninety_days_ago = today - timedelta(days=90)
@@ -102,6 +103,15 @@ class DashboardStatsView(APIView):
         program = JourneyProgram.objects.filter(user=user, active=True).first()
         target_cardio = weekly_cardio_target(target, program)
         calories_burned_week = sum(s.total_calories() or 0 for s in week_sessions)
+        # Standalone cardio entries (not tied to a session) have their own calorie
+        # estimate and aren't covered by total_calories() above; session-linked
+        # entries are excluded here since their calories are already counted via
+        # the session's sets.
+        calories_burned_week += sum(
+            c or 0 for c in CardioEntry.objects.filter(
+                user=user, date__gte=start_of_week, completed=True, session__isnull=True
+            ).values_list('calories', flat=True)
+        )
         target_calories_burned = weekly_calories_burned_target(target)
 
         # Trend Series for Dashboard Charts
@@ -565,7 +575,7 @@ class CalendarDayStatusView(APIView):
         # the calendar-offset mapping, since history edits target a specific date.
         program = JourneyProgram.objects.filter(user=user, active=True).first()
         if program and program.start_date:
-            if target_date == date.today():
+            if target_date == timezone.localdate():
                 day_num = program.current_day
             else:
                 day_num = (target_date - program.start_date).days + 1

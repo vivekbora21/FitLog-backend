@@ -1,8 +1,8 @@
 from rest_framework import serializers
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from datetime import timedelta
 from django.utils import timezone
-from .progression import progression_for
+from .progression import progression_for, WORKING_SET_TYPES
 from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, WorkoutExercise, WorkoutSet, ProgramDay, CardioEntry, JourneyProgram, ProgramDayExerciseSwap
 from exercises.models import Exercise
 from exercises.serializers import ExerciseSerializer
@@ -44,9 +44,10 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             'id', 'user', 'user_email', 'user_name', 'gym', 'gym_name', 'assigned_workout',
             'routine', 'title', 'started_at', 'completed_at', 'duration_seconds',
             'overall_rpe', 'notes', 'exercises', 'total_volume_kg', 'total_calories',
-            'new_prs', 'created_at'
+            'new_prs', 'created_at', 'idempotency_key'
         ]
         read_only_fields = ['user', 'created_at']
+        extra_kwargs = {'idempotency_key': {'write_only': True, 'required': False, 'allow_null': True}}
 
     def get_user_name(self, obj):
         return obj.user.get_full_name() or obj.user.username
@@ -88,7 +89,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         cardio_candidates = []  # (exercise_name, primary_muscle_name, [WorkoutSet, ...])
         for workout_exercise, (sets_data, exercise), created_sets in zip(workout_exercises, all_sets_data, sets_by_exercise):
             for workout_set in created_sets:
-                if track_prs and workout_set.completed and workout_set.weight_kg > 0 and workout_set.reps > 0:
+                if (track_prs and workout_set.completed and workout_set.weight_kg > 0 and workout_set.reps > 0
+                        and workout_set.set_type in WORKING_SET_TYPES):
                     est_1rm = PersonalRecord.calculate_epley_1rm(workout_set.weight_kg, workout_set.reps)
 
                     pr, created = PersonalRecord.objects.get_or_create(
@@ -199,6 +201,17 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         exercises_data = validated_data.pop('exercises', [])
         user = self.context['request'].user
+        idempotency_key = validated_data.pop('idempotency_key', None)
+
+        # A retried "finish workout" request (client timeout + retry, double-tap) must
+        # not create a second session, double-count volume/PRs, or double-advance the
+        # journey program. If this exact key was already used by this user, replay the
+        # session that resulted from the original request instead of redoing any of it.
+        if idempotency_key:
+            existing = WorkoutSession.objects.filter(user=user, idempotency_key=idempotency_key).first()
+            if existing:
+                return existing
+
         # The session is being saved because it finished, so completed_at is never left
         # empty: trust the client's clock when sent, else derive it from the duration.
         if not validated_data.get('completed_at'):
@@ -207,7 +220,18 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             validated_data['completed_at'] = (
                 started_at + timedelta(seconds=duration) if started_at and duration else timezone.now()
             )
-        session = WorkoutSession.objects.create(user=user, **validated_data)
+        try:
+            with transaction.atomic():
+                session = WorkoutSession.objects.create(user=user, idempotency_key=idempotency_key, **validated_data)
+        except IntegrityError:
+            # Two concurrent retries both passed the check above; the loser's insert
+            # blocked on the winner's row-lock then failed the unique constraint once
+            # the winner committed. The winner's session is now visible — replay it.
+            if idempotency_key:
+                existing = WorkoutSession.objects.filter(user=user, idempotency_key=idempotency_key).first()
+                if existing:
+                    return existing
+            raise
         weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
 
         new_prs, cardio_candidates = self._create_exercises(session, exercises_data, weight_kg, user, track_prs=True)
@@ -392,10 +416,29 @@ class ProgramDaySerializer(serializers.ModelSerializer):
         return super().to_representation(instance)
 
 class CardioEntrySerializer(serializers.ModelSerializer):
+    calories = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = CardioEntry
-        fields = ['id', 'date', 'modality', 'duration_minutes', 'intensity', 'heart_rate', 'target_zone', 'completed']
+        fields = ['id', 'date', 'modality', 'duration_minutes', 'intensity', 'heart_rate', 'target_zone', 'completed', 'calories']
         read_only_fields = ['user']
+
+    def _estimate_calories(self, instance):
+        user = self.context['request'].user
+        weight_kg = getattr(getattr(user, 'profile', None), 'weight_kg', None)
+        return instance.estimate_calories(weight_kg)
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        instance.calories = self._estimate_calories(instance)
+        instance.save(update_fields=['calories'])
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        instance.calories = self._estimate_calories(instance)
+        instance.save(update_fields=['calories'])
+        return instance
 
 class AssignedWorkoutSerializer(serializers.ModelSerializer):
     routine_name = serializers.CharField(source='routine.name', read_only=True)

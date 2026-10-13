@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinValueValidator, MaxValueValidator
 from core.models import UUIDTimeStampedModel
 
 class WeightEntry(UUIDTimeStampedModel):
@@ -9,8 +10,8 @@ class WeightEntry(UUIDTimeStampedModel):
         related_name='weight_entries'
     )
     date = models.DateField()
-    weight_kg = models.FloatField()
-    body_fat_pct = models.FloatField(null=True, blank=True)
+    weight_kg = models.FloatField(validators=[MinValueValidator(20), MaxValueValidator(400)])
+    body_fat_pct = models.FloatField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
     notes = models.TextField(blank=True, default='')
 
     class Meta:

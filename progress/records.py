@@ -9,6 +9,7 @@ from .models import PersonalRecord
 
 def recompute_personal_records(user, exercise_ids):
     from workouts.models import WorkoutSet
+    from workouts.progression import WORKING_SET_TYPES
 
     for exercise_id in set(exercise_ids):
         sets = (
@@ -19,6 +20,7 @@ def recompute_personal_records(user, exercise_ids):
                 completed=True,
                 weight_kg__gt=0,
                 reps__gt=0,
+                set_type__in=WORKING_SET_TYPES,
             )
             .select_related('workout_exercise__session')
         )

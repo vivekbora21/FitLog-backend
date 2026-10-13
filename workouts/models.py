@@ -97,6 +97,37 @@ class JourneyProgram(UUIDTimeStampedModel):
     target_focus_1rm = models.FloatField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
 
+    # --- Plan-engine fields (spec v1.6 section 7.1) ---------------------
+    # All nullable/blank: legacy plans (created before the plan_engine was
+    # wired in) leave every one of these null, and `engine_version IS NULL`
+    # is how callers (e.g. analytics.pacing) distinguish a legacy plan from
+    # one the new engine computed. Purely additive -- no backfill, no
+    # change to any existing row's data.
+    ENGINE_PRECISION_CHOICES = [
+        ('calorie_projected', 'Calorie projected'),
+        ('directional', 'Directional'),
+        ('maintenance', 'Maintenance'),
+    ]
+    engine_version = models.CharField(max_length=20, null=True, blank=True)
+    # The full PlanInputs the engine was given, serialized to JSON, so a
+    # saved plan can be recomputed/audited later (section 7.1).
+    inputs = models.JSONField(null=True, blank=True)
+    # 4.8 overrides, as submitted (None if no override was active).
+    calorie_override = models.IntegerField(null=True, blank=True)
+    macro_override_protein_g = models.IntegerField(null=True, blank=True)
+    macro_override_fat_g = models.IntegerField(null=True, blank=True)
+    macro_override_carbs_g = models.IntegerField(null=True, blank=True)
+    # Resulting engine targets (PlanTargets, serialized form -- section 4.9).
+    target_calories = models.IntegerField(null=True, blank=True)
+    target_protein_g = models.IntegerField(null=True, blank=True)
+    target_fat_g = models.IntegerField(null=True, blank=True)
+    target_carbs_g = models.IntegerField(null=True, blank=True)
+    activity_factor = models.FloatField(null=True, blank=True)
+    predicted_weekly_change_kg = models.FloatField(null=True, blank=True)
+    precision = models.CharField(
+        max_length=20, choices=ENGINE_PRECISION_CHOICES, null=True, blank=True
+    )
+
     class Meta:
         constraints = [models.UniqueConstraint(fields=['user'], condition=models.Q(active=True), name='one_active_journey_per_user')]
 
@@ -149,6 +180,17 @@ class ProgramDayExerciseSwap(UUIDTimeStampedModel):
 
 class CardioEntry(UUIDTimeStampedModel):
     MODALITIES = [('TREADMILL', 'Treadmill'), ('CYCLING', 'Cycling'), ('CROSS_TRAINER', 'Cross Trainer'), ('ELLIPTICAL', 'Elliptical'), ('ROWING', 'Rowing'), ('OTHER', 'Other')]
+    # Approximate Metabolic Equivalent of Task per modality, used to estimate calories
+    # for entries logged directly (no linked Exercise/MET value to draw from like
+    # WorkoutSet does).
+    MODALITY_MET_VALUES = {
+        'TREADMILL': 8.0,
+        'CYCLING': 7.5,
+        'CROSS_TRAINER': 6.0,
+        'ELLIPTICAL': 5.0,
+        'ROWING': 7.0,
+        'OTHER': 5.0,
+    }
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cardio_entries')
     session = models.ForeignKey(
         'WorkoutSession',
@@ -165,6 +207,20 @@ class CardioEntry(UUIDTimeStampedModel):
     heart_rate = models.PositiveSmallIntegerField(null=True, blank=True)
     target_zone = models.CharField(max_length=40, blank=True, default='')
     completed = models.BooleanField(default=True)
+    calories = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Estimated calories burned. Only set for entries not tied to a WorkoutSession '
+                   '(session-linked entries get their calories from the underlying WorkoutSet rows, '
+                   'so summing both would double-count).'
+    )
+
+    def estimate_calories(self, weight_kg):
+        """MET-based estimate for a standalone cardio entry (no linked Exercise to
+        pull a MET value from, so modality maps to an approximate MET constant)."""
+        if not weight_kg or not self.duration_minutes:
+            return None
+        met_value = self.MODALITY_MET_VALUES.get(self.modality, self.MODALITY_MET_VALUES['OTHER'])
+        return round(met_value * weight_kg * (self.duration_minutes / 60))
 
 class AssignedWorkout(UUIDTimeStampedModel):
     STATUS_CHOICES = [
@@ -237,9 +293,20 @@ class WorkoutSession(UUIDTimeStampedModel):
     duration_seconds = models.PositiveIntegerField(default=0)
     overall_rpe = models.PositiveSmallIntegerField(null=True, blank=True)
     notes = models.TextField(blank=True, default='')
+    # Client-generated token (e.g. a UUID minted once per "finish workout" tap) so a
+    # retried/duplicated completion request (timeout, double-tap) is a no-op instead
+    # of creating a second session. Null for older rows and any caller that omits it.
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         ordering = ['-started_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'idempotency_key'],
+                name='unique_session_idempotency_key_per_user',
+                condition=models.Q(idempotency_key__isnull=False),
+            )
+        ]
 
     def total_volume_kg(self):
         total = 0.0

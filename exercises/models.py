@@ -52,6 +52,28 @@ class Exercise(UUIDTimeStampedModel):
         on_delete=models.PROTECT,
         related_name='exercises'
     )
+    # Additional equipment this exercise can also be performed with/on,
+    # beyond the single required `equipment` above (e.g. a barbell bench
+    # press that is also doable with dumbbells). Used by future
+    # split-generation / equipment-availability logic (spec section 6);
+    # additive and optional, so existing rows are unaffected.
+    secondary_equipment = models.ManyToManyField(
+        EquipmentType,
+        blank=True,
+        related_name='exercises_secondary'
+    )
+    # Ordered list of alternative exercises the generator can swap in when
+    # this one is unavailable (e.g. wrong equipment level). See
+    # `ExerciseSubstitute` below for the ordering field. Additive/optional;
+    # existing rows start with no substitutes.
+    substitutes = models.ManyToManyField(
+        'self',
+        through='ExerciseSubstitute',
+        through_fields=('exercise', 'substitute'),
+        symmetrical=False,
+        related_name='substitute_for',
+        blank=True,
+    )
     instructions = models.TextField(blank=True, default='')
     video_url = models.URLField(max_length=500, blank=True, null=True)
     # Metabolic Equivalent of Task (Compendium of Physical Activities). Used to
@@ -80,3 +102,33 @@ class Exercise(UUIDTimeStampedModel):
     def __str__(self):
         prefix = f"[{self.gym.name}] " if self.gym else ""
         return f"{prefix}{self.name} ({self.primary_muscle.name})"
+
+
+class ExerciseSubstitute(UUIDTimeStampedModel):
+    """Ordered substitute mapping: `substitute` is an acceptable swap for
+    `exercise`, in preference order (lowest `order` first). Purely additive
+    content; no existing code reads or writes this table yet (it is laid
+    down now for the section 6 split/exercise-selection work, out of scope
+    for this pass)."""
+    exercise = models.ForeignKey(
+        Exercise, on_delete=models.CASCADE, related_name='substitute_links'
+    )
+    substitute = models.ForeignKey(
+        Exercise, on_delete=models.CASCADE, related_name='substitute_of_links'
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['exercise', 'substitute'], name='unique_exercise_substitute'
+            ),
+            models.CheckConstraint(
+                check=~models.Q(exercise=models.F('substitute')),
+                name='exercise_substitute_not_self'
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.exercise.name} -> {self.substitute.name} (#{self.order})"

@@ -3,6 +3,68 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from users.models import User
 
+
+class TokenRevocationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            email='revoke@example.com', username='revoke', password='OldPass123!'
+        )
+
+    def _login(self):
+        res = self.client.post('/api/auth/login/', {'email': 'revoke@example.com', 'password': 'OldPass123!'}, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.data['access'], res.data['refresh']
+
+    def _authed(self, access):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        return client
+
+    def test_logout_blacklists_the_refresh_token(self):
+        access, refresh = self._login()
+        client = self._authed(access)
+
+        logout_res = client.post('/api/auth/logout/', {'refresh': refresh}, format='json')
+        self.assertEqual(logout_res.status_code, 200)
+
+        refresh_res = self.client.post('/api/auth/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(refresh_res.status_code, 401)
+
+    def test_password_change_revokes_other_outstanding_sessions(self):
+        access_device_a, refresh_device_a = self._login()
+        access_device_b, refresh_device_b = self._login()
+
+        client_a = self._authed(access_device_a)
+        change_res = client_a.post('/api/auth/change-password/', {
+            'old_password': 'OldPass123!', 'new_password': 'BrandNewPass456!',
+        }, format='json')
+        self.assertEqual(change_res.status_code, 200, change_res.data)
+
+        # Both devices' pre-change refresh tokens (including the one used to change
+        # the password) must stop working — a leaked token shouldn't survive this.
+        res_a = self.client.post('/api/auth/refresh/', {'refresh': refresh_device_a}, format='json')
+        self.assertEqual(res_a.status_code, 401)
+        res_b = self.client.post('/api/auth/refresh/', {'refresh': refresh_device_b}, format='json')
+        self.assertEqual(res_b.status_code, 401)
+
+    def test_password_reset_confirm_revokes_outstanding_sessions(self):
+        _, refresh = self._login()
+        from users.models import PasswordResetCode
+        from django.contrib.auth.hashers import make_password
+        from django.utils import timezone
+        from datetime import timedelta
+        PasswordResetCode.objects.create(
+            user=self.user, code_hash=make_password('123456'), expires_at=timezone.now() + timedelta(minutes=15)
+        )
+        reset_res = self.client.post('/api/auth/password-reset/confirm/', {
+            'email': 'revoke@example.com', 'code': '123456', 'new_password': 'AnotherNew789!',
+        }, format='json')
+        self.assertEqual(reset_res.status_code, 200, reset_res.data)
+
+        refresh_res = self.client.post('/api/auth/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(refresh_res.status_code, 401)
+
 class AuthValidationTests(TestCase):
     def setUp(self):
         self.client = APIClient()

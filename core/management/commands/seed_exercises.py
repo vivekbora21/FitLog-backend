@@ -148,6 +148,14 @@ EXERCISES = [
         "Squeeze pecs at peak, control the return. Isolated chest work."
     ),
     (
+        "Down-to-Up Dumbbell Chest Fly",
+        "down-to-up-dumbbell-chest-fly",
+        "chest", "dumbbell",
+        "Lie on an incline bench, dumbbells starting low and wide at chest level. "
+        "Sweep arms upward in an arc to meet above the chest, squeezing at the top. "
+        "Targets upper chest and anterior delt; the dumbbell counterpart to the low-to-high cable fly."
+    ),
+    (
         "Machine Chest Press",
         "machine-chest-press",
         "chest", "machine",
@@ -189,7 +197,14 @@ EXERCISES = [
     (
         "Conventional Deadlift",
         "conventional-deadlift",
-        "back", "barbell",
+        # Reclassified from "back" (FITLOG_EXERCISE_AUDIT_v1.md section 6 /
+        # exercises/migrations/0005_close_equipment_gaps_and_fix_bugs.py):
+        # a conventional-stance pull is a hip-hinge, posterior-chain/
+        # hamstring-dominant movement, not a vertical/horizontal pull like
+        # rows and pulldowns, and it was causing Upper/Lower's Lower-day
+        # placement to double-count toward "Back" frequency (3x/week
+        # instead of the intended 2x/week from the two Upper days).
+        "hamstrings", "barbell",
         "Stand with feet hip-width, grip bar just outside knees. Brace core, "
         "drive through feet, extend hips and knees simultaneously. "
         "Keep bar close to body. Lockout with chest proud."
@@ -229,13 +244,16 @@ EXERCISES = [
         "One knee and hand on bench for support. Row dumbbell to hip pocket, "
         "retracting shoulder blade. Full stretch at bottom."
     ),
-    (
-        "Chest-Supported Dumbbell Row",
-        "chest-supported-dumbbell-row",
-        "back", "dumbbell",
-        "Lie face-down on incline bench. Row both dumbbells simultaneously. "
-        "Eliminates lower-back involvement for pure lat/rhomboid work."
-    ),
+    # "Chest-Supported Dumbbell Row" (slug chest-supported-dumbbell-row) was
+    # removed here (FITLOG_EXERCISE_AUDIT_v1.md section 6 /
+    # exercises/migrations/0005_close_equipment_gaps_and_fix_bugs.py): it
+    # was a duplicate of the "chest-supported-db-row" row created by
+    # core/management/commands/seed_vivek_journey.py under the same display
+    # name, same muscle/equipment. That other row has real FK references
+    # (logged RoutineExercise/WorkoutExercise rows for a seeded demo
+    # journey) and must stay; this one had zero references anywhere and was
+    # the one actually causing the generator's by-name exercise lookup to
+    # be ambiguous, so it is the one removed. Do not re-add it here.
     (
         "Seated Cable Row",
         "seated-cable-row",
@@ -1258,6 +1276,30 @@ EXERCISES = [
         "Hold roller device with weight suspended by a rope. Roll wrists forward "
         "and backward to wind/unwind the rope. Intense grip and forearm burnout."
     ),
+    # Added for FITLOG_EXERCISE_AUDIT_v1.md / exercises/migrations/0005_...:
+    # minimal equipment had 0 Biceps exercises system-wide (home already had
+    # 7 and passed the >=2 gate unaffected).
+    (
+        "Resistance Band Bicep Curl",
+        "resistance-band-bicep-curl",
+        "biceps", "resistance-band",
+        "Stand on the middle of the band, one handle in each hand, palms facing "
+        "forward. Curl hands to shoulders against band tension, lower with control."
+    ),
+    (
+        "Resistance Band Hammer Curl",
+        "resistance-band-hammer-curl",
+        "biceps", "resistance-band",
+        "Stand on the band with a neutral (palms-in) grip on each handle. Curl "
+        "straight up keeping wrists neutral throughout, targeting brachialis."
+    ),
+    (
+        "Resistance Band Concentration Curl",
+        "resistance-band-concentration-curl",
+        "biceps", "resistance-band",
+        "Sit, anchor the band under one foot, brace the working elbow against the "
+        "inner thigh. Curl the handle up with strict form, no body English."
+    ),
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ADDITIONAL TRICEPS
@@ -1340,6 +1382,31 @@ EXERCISES = [
         "Similar to RDL but with knees nearly locked throughout. "
         "Hinge at hips, lower bar along shins to deep hamstring stretch, then return."
     ),
+    # Added for FITLOG_EXERCISE_AUDIT_v1.md / exercises/migrations/0005_...:
+    # minimal equipment had only 1 Hamstrings exercise (Nordic Hamstring
+    # Curl) system-wide, below the >=2 gate (home already had 4 and passed).
+    (
+        "Bodyweight Single-Leg Deadlift",
+        "bodyweight-single-leg-deadlift",
+        "hamstrings", "bodyweight",
+        "Stand on one leg, hinge at the hips while extending the free leg straight "
+        "back for balance, lowering torso toward parallel. Drive hips forward to return."
+    ),
+    (
+        "Resistance Band Romanian Deadlift",
+        "resistance-band-romanian-deadlift",
+        "hamstrings", "resistance-band",
+        "Stand on the middle of the band, feet hip-width, holding a handle in each "
+        "hand. Hinge at the hips keeping knees soft, lower until a hamstring stretch "
+        "is felt, then drive hips forward to stand."
+    ),
+    (
+        "Resistance Band Lying Leg Curl",
+        "resistance-band-lying-leg-curl",
+        "hamstrings", "resistance-band",
+        "Lie face-down with the band anchored in front of you and looped around one "
+        "ankle. Curl the heel toward the glute against band tension, control the return."
+    ),
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ADDITIONAL GLUTES
@@ -1382,6 +1449,30 @@ EXERCISES = [
         "calves", "machine",
         "Sit in leg press machine, place balls of feet on lower platform edge. "
         "Extend and flex ankles through full range of motion."
+    ),
+    # Added for FITLOG_EXERCISE_AUDIT_v1.md / exercises/migrations/0005_...:
+    # home and minimal equipment only had 1 distinct Calves exercise
+    # (Single-Leg Calf Raise) system-wide, below the >=2 gate (spec 6.7).
+    (
+        "Bodyweight Standing Calf Raise",
+        "bodyweight-standing-calf-raise",
+        "calves", "bodyweight",
+        "Stand on a flat floor or step edge, feet hip-width. Rise onto the balls "
+        "of both feet, pause, then lower under control for a full stretch."
+    ),
+    (
+        "Resistance Band Standing Calf Raise",
+        "resistance-band-standing-calf-raise",
+        "calves", "resistance-band",
+        "Loop a band under the balls of both feet, holding the ends at your sides "
+        "or anchored to a low point. Rise onto toes against band tension, lower slowly."
+    ),
+    (
+        "Dumbbell Standing Calf Raise",
+        "dumbbell-standing-calf-raise",
+        "calves", "dumbbell",
+        "Hold a dumbbell in each hand at your sides, balls of feet on a raised edge "
+        "if available. Rise onto toes, pause, lower for a deep stretch."
     ),
 
     # ═══════════════════════════════════════════════════════════════════════════

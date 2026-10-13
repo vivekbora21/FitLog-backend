@@ -7,7 +7,7 @@ from progress.models import WeightEntry
 from workouts.models import JourneyProgram
 from .models import Food, MacroTarget, MealEntry, NutritionDay
 from .defaults import DIET_PLAN_OPTION_A_TARGETS
-from .targets import calculate_recommended_targets, mifflin_st_jeor_bmr
+from .targets import calculate_recommended_targets, mifflin_st_jeor_bmr, get_or_create_macro_target, TargetTimeline
 
 
 def make_user(email='lifter@example.com', **profile):
@@ -139,6 +139,57 @@ class FoodLoggingTests(TestCase):
         self.assertEqual(body['servings'], 2.0)
         self.assertEqual(body['calories'], 460)
         self.assertEqual(body['protein_g'], 46.0)
+
+
+class MealEntryIdempotencyTests(TestCase):
+    """BUG-11 offline-queue support: a retried meal-log write (connectivity drop after
+    the server actually succeeded, or a queued-write resend) must not create a second
+    meal entry."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_retry_with_same_key_does_not_duplicate_entry(self):
+        payload = {
+            'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 350, 'protein_g': 12,
+            'date': '2026-02-10', 'idempotency_key': 'meal-retry-key-1',
+        }
+        res1 = self.client.post('/api/nutrition/meals/', payload, format='json')
+        self.assertEqual(res1.status_code, 201, res1.data)
+        res2 = self.client.post('/api/nutrition/meals/', payload, format='json')
+        self.assertEqual(res2.status_code, 201, res2.data)
+        self.assertEqual(res1.data['id'], res2.data['id'])
+        self.assertEqual(MealEntry.objects.filter(nutrition_day__user=self.user).count(), 1)
+
+    def test_different_keys_create_separate_entries(self):
+        base = {'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 350, 'date': '2026-02-11'}
+        res1 = self.client.post('/api/nutrition/meals/', {**base, 'idempotency_key': 'key-a'}, format='json')
+        res2 = self.client.post('/api/nutrition/meals/', {**base, 'idempotency_key': 'key-b'}, format='json')
+        self.assertEqual(res1.status_code, 201)
+        self.assertEqual(res2.status_code, 201)
+        self.assertNotEqual(res1.data['id'], res2.data['id'])
+        self.assertEqual(MealEntry.objects.filter(nutrition_day__user=self.user).count(), 2)
+
+    def test_no_key_behaves_as_before(self):
+        base = {'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 350, 'date': '2026-02-12'}
+        res1 = self.client.post('/api/nutrition/meals/', base, format='json')
+        res2 = self.client.post('/api/nutrition/meals/', base, format='json')
+        self.assertEqual(res1.status_code, 201)
+        self.assertEqual(res2.status_code, 201)
+        self.assertEqual(MealEntry.objects.filter(nutrition_day__user=self.user).count(), 2)
+
+    def test_same_key_different_days_are_independent(self):
+        res1 = self.client.post('/api/nutrition/meals/', {
+            'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 350, 'date': '2026-02-13', 'idempotency_key': 'shared-key',
+        }, format='json')
+        res2 = self.client.post('/api/nutrition/meals/', {
+            'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 350, 'date': '2026-02-14', 'idempotency_key': 'shared-key',
+        }, format='json')
+        self.assertEqual(res1.status_code, 201)
+        self.assertEqual(res2.status_code, 201)
+        self.assertNotEqual(res1.data['id'], res2.data['id'])
 
 
 class RecentFoodsAndRepeatYesterdayTests(TestCase):
@@ -325,6 +376,105 @@ class TargetHistoryTests(TestCase):
         target = MacroTarget.objects.create(user=self.user)
         target.save()
         self.assertEqual(TargetHistory.objects.filter(user=self.user).count(), 1)
+
+
+class WeeklySummaryTargetFallbackTests(TestCase):
+    """BUG-25: a day outside the fetched history window (a future day within the current
+    week, or a day in the oldest partial week) fell back to a hardcoded 2200 kcal target
+    instead of the user's actual resolved target."""
+
+    def setUp(self):
+        self.user = make_user('weeklyfallback@example.com', **WORKBOOK_PROFILE)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_week_level_summary_target_resolves_real_target_when_no_day_in_range(self):
+        """Unit-level: build_weekly_nutrition_summaries's week-summary target (t_cal/t_pro/
+        t_carb/t_fat/t_water) falls back to the user's real resolved target rather than the
+        hardcoded 2200/160/240/65/2500 defaults when a week has no day present in
+        history_list at all — reachable if this function is ever called (directly, or from
+        a future call site) with a history_list that doesn't contiguously span every day
+        back to the oldest one, unlike today's single production call site."""
+        from .views import build_weekly_nutrition_summaries
+
+        target = get_or_create_macro_target(self.user)
+        target.daily_calories = 1800
+        target.protein_g = 170
+        target.carbs_g = 200
+        target.fat_g = 55
+        target.water_ml = 3000
+        target.save()
+        timeline = TargetTimeline(self.user)
+
+        today = date(2026, 1, 26)  # a Monday
+        history_list = [{
+            'date': '2026-01-05',  # three Mondays earlier — leaves a gap in between
+            'total_calories': 0, 'total_protein': 0.0, 'total_carbs': 0.0, 'total_fat': 0.0,
+            'water_consumed_ml': 0, 'has_logged': False,
+            'target_calories': 1800, 'target_protein': 170, 'target_carbs': 200, 'target_fat': 55, 'target_water': 3000,
+        }]
+        weeks = build_weekly_nutrition_summaries(history_list, today, 'CUT', 'MAX', timeline)
+        gap_week = next(w for w in weeks if w['week_start'] == '2026-01-12')
+        self.assertEqual(gap_week['target_calories'], 1800)
+        self.assertEqual(gap_week['target_protein'], 170)
+        self.assertNotEqual(gap_week['target_calories'], 2200)
+
+    def test_future_day_in_current_week_uses_real_target_not_hardcoded_2200(self):
+        target = get_or_create_macro_target(self.user)
+        target.daily_calories = 1950
+        target.save()
+
+        res = self.client.get('/api/nutrition/history/?days=1')
+        self.assertEqual(res.status_code, 200, res.data)
+        weeks = res.json()['weeks']
+        self.assertTrue(weeks)
+
+        current_week = weeks[0]
+        future_days = [d for d in current_week['days'] if d['is_future']]
+        if not future_days:
+            self.skipTest('Today happened to be a Sunday in this run — no future day in the current week to check.')
+        for day in future_days:
+            self.assertEqual(day['target_calories'], 1950)
+            self.assertNotEqual(day['target_calories'], 2200)
+
+
+class LogDateBoundTests(TestCase):
+    """BUG-31: a client-supplied log date (manipulated device clock/timezone, or a buggy
+    client) had no server-side bound at all."""
+
+    def setUp(self):
+        self.user = make_user('datebound@example.com', **WORKBOOK_PROFILE)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_absurdly_far_future_date_is_rejected_on_nutrition_day_get(self):
+        res = self.client.get('/api/nutrition/9999-01-01/')
+        self.assertEqual(res.status_code, 400)
+
+    def test_absurdly_old_date_is_rejected_on_nutrition_day_get(self):
+        res = self.client.get('/api/nutrition/0001-01-01/')
+        self.assertEqual(res.status_code, 400)
+
+    def test_plausible_past_date_is_accepted(self):
+        res = self.client.get('/api/nutrition/2024-06-01/')
+        self.assertEqual(res.status_code, 200)
+
+    def test_meal_log_with_absurd_date_is_rejected(self):
+        res = self.client.post('/api/nutrition/meals/', {
+            'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 300, 'date': '9999-01-01',
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(NutritionDay.objects.filter(date__year=9999).exists())
+
+    def test_meal_log_with_plausible_date_is_accepted(self):
+        res = self.client.post('/api/nutrition/meals/', {
+            'meal_type': 'BREAKFAST', 'name': 'Oats', 'calories': 300, 'date': '2025-01-01',
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_water_patch_with_absurd_date_is_rejected(self):
+        res = self.client.patch('/api/nutrition/9999-01-01/', {'water_consumed_ml': 500}, format='json')
+        self.assertEqual(res.status_code, 400)
 
 
 class NutritionHistoryViewTests(TestCase):

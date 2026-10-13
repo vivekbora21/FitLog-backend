@@ -7,6 +7,7 @@ activity -> BMR ~1,718 kcal, maintenance ~2,660 kcal, ~500 kcal deficit -> 2,160
 165 g protein (2.1 g/kg).
 """
 from datetime import date
+from django.utils import timezone
 
 from progress.models import WeightEntry
 from workouts.models import JourneyProgram, WorkoutSession
@@ -72,7 +73,7 @@ def calculate_recommended_targets(user, today=None):
     Returns a dict with the full derivation (so the UI can show where the number
     comes from), or {'available': False, 'missing': [...]} if the profile is incomplete.
     """
-    today = today or date.today()
+    today = today or timezone.localdate()
     profile = getattr(user, 'profile', None)
 
     latest_weight = WeightEntry.objects.filter(user=user).order_by('-date').first()
@@ -352,7 +353,7 @@ def exercise_calories_today(user, day=None):
     """Sum of estimated calories burned across today's logged workout sessions,
     so the member can 'eat back' real exercise calories on top of the
     activity-level-scaled daily target (which only reflects an average week)."""
-    day = day or date.today()
+    day = day or timezone.localdate()
     sessions = WorkoutSession.objects.filter(user=user, started_at__date=day)
     return sum(s.total_calories() or 0 for s in sessions)
 

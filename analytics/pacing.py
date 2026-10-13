@@ -136,20 +136,59 @@ def calculate_journey_pacing(user, program=None):
         start_date = date.fromisoformat(start_date)
     duration_days = program.duration_days
     current_day = max(1, min(duration_days, program.current_day or 1))
-    today = date.today()
+    today = timezone.localdate()
 
     # All user weight entries
     all_weights = list(WeightEntry.objects.filter(user=user).order_by('date'))
     weights_by_date = {w.date: w.weight_kg for w in all_weights}
 
-    # Target weekly rate
-    target_weekly_rate = resolve_target_weekly_rate(
-        mode,
-        start_weight_kg=program.start_weight_kg,
-        target_weight_kg=program.target_weight_kg,
-        duration_days=duration_days,
-        explicit_rate_kg=program.target_weekly_rate_kg,
-    )
+    # --- Engine-backed vs legacy dispatch (spec v1.6 section 7.3) ----------
+    # `engine_version IS NULL` means this plan predates the plan_engine (or
+    # was never routed through it) -- for those, `is_engine_backed` is False
+    # and every line below behaves byte-for-byte as it did before this
+    # branch existed (same resolve_target_weekly_rate call, same inputs).
+    #
+    # For an engine-backed plan, spec 7.3 says this function "must read the
+    # stored target_calories and predicted_weekly_change_kg from the saved
+    # plan, not recompute with different constants." The weight-velocity
+    # *corridor baseline* (`target_weekly_rate`, used below for
+    # target_weight_today/expected_final_weight/the trajectory curve) is the
+    # piece that maps directly onto `predicted_weekly_change_kg` -- so for a
+    # `calorie_projected` plan (Cut/Bulk) that value is used directly instead
+    # of being recomputed. A `directional`/`maintenance` plan (Recomp/Focus/
+    # Habit) has no such stored value at all (the engine deliberately leaves
+    # `predicted_weekly_change_kg` null for those -- "on the right path"
+    # isn't a weight target for them per spec 7.3), so they fall back to the
+    # same resolution chain legacy plans already use; the velocity pillar
+    # below already weighs adherence/strength more heavily than velocity for
+    # those modes, so this fallback is a display/trajectory-curve
+    # convenience, not a pacing judgment call.
+    #
+    # NOTE: the *other* half of 7.3's instruction -- also reading
+    # `target_calories` from the stored plan -- is intentionally NOT done
+    # here. This function separately sources a `target_calories` for the
+    # copilot-insight text and the `nutrition` section of the response from
+    # `nutrition.targets.get_or_create_macro_target(user)`, which is fully
+    # decoupled from any specific JourneyProgram (it's the member's
+    # editable, always-current nutrition target, not a plan snapshot).
+    # Swapping that source for `program.target_calories` on engine-backed
+    # plans only would silently make the copilot's nutrition framing depend
+    # on which plan type created the active journey, and could disagree
+    # with whatever the member has since edited in Nutrition settings. That
+    # "whose number wins" question wasn't resolved by the product owner for
+    # this pass, so it's left exactly as-is; see the implementation report.
+    is_engine_backed = bool(program.engine_version)
+
+    if is_engine_backed and program.predicted_weekly_change_kg is not None:
+        target_weekly_rate = program.predicted_weekly_change_kg
+    else:
+        target_weekly_rate = resolve_target_weekly_rate(
+            mode,
+            start_weight_kg=program.start_weight_kg,
+            target_weight_kg=program.target_weight_kg,
+            duration_days=duration_days,
+            explicit_rate_kg=program.target_weekly_rate_kg,
+        )
 
     # Resolve start weight
     start_weight = resolve_start_weight(
@@ -541,6 +580,13 @@ def calculate_journey_pacing(user, program=None):
         'program_name': program.name,
         'mode': mode,
         'mode_label': dict(JourneyProgram.MODE_CHOICES).get(mode, mode),
+        # Additive (spec v1.6 7.3): surfaces whether -- and with what
+        # precision -- this plan's targets came from the plan_engine, for
+        # any consumer that wants to distinguish a calorie_projected plan
+        # (numeric weight target) from a directional/maintenance one
+        # (adherence/trend-based). Null for a legacy (pre-engine) plan.
+        'engine_version': program.engine_version,
+        'precision': program.precision,
         'pacing_status': overall_status,
         'pacing_score': final_score,
         'current_day': current_day,

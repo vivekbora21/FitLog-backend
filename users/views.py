@@ -3,6 +3,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 import secrets
 from datetime import timedelta
 from django.contrib.auth import password_validation
@@ -65,6 +67,33 @@ class MeView(APIView):
             return Response(user_serializer.data)
         return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+def revoke_all_tokens_for_user(user):
+    """Blacklists every outstanding (not yet expired) refresh token for a user, so a
+    leaked token or a device the user meant to sign out of stops working immediately
+    instead of staying valid for up to REFRESH_TOKEN_LIFETIME."""
+    outstanding = OutstandingToken.objects.filter(user=user, expires_at__gt=timezone.now())
+    BlacklistedToken.objects.bulk_create(
+        (BlacklistedToken(token=t) for t in outstanding),
+        ignore_conflicts=True,
+    )
+
+
+class LogoutView(APIView):
+    """Blacklists the refresh token the client signs out with, so it can't be
+    replayed for a fresh access token after logout."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        refresh = request.data.get('refresh')
+        if not refresh:
+            return Response({'detail': 'refresh token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            RefreshToken(refresh).blacklist()
+        except TokenError:
+            pass
+        return Response({'detail': 'Logged out.'})
+
+
 class ChangePasswordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -72,6 +101,7 @@ class ChangePasswordView(APIView):
         serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             serializer.save()
+            revoke_all_tokens_for_user(request.user)
             return Response({'detail': 'Password updated successfully.'})
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -140,6 +170,7 @@ class PasswordResetConfirmView(APIView):
         user.save(update_fields=['password'])
         reset.used = True
         reset.save(update_fields=['used', 'updated_at'])
+        revoke_all_tokens_for_user(user)
         return Response({'detail': 'Password updated. You can sign in now.'})
 
 

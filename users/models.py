@@ -1,4 +1,5 @@
 from django.contrib.auth.models import AbstractUser
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
 from core.models import UUIDTimeStampedModel
 
@@ -47,12 +48,13 @@ class UserProfile(UUIDTimeStampedModel):
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     date_of_birth = models.DateField(null=True, blank=True)
-    height_cm = models.FloatField(null=True, blank=True)
-    weight_kg = models.FloatField(null=True, blank=True)
+    height_cm = models.FloatField(null=True, blank=True, validators=[MinValueValidator(50), MaxValueValidator(250)])
+    weight_kg = models.FloatField(null=True, blank=True, validators=[MinValueValidator(20), MaxValueValidator(400)])
     sex = models.CharField(max_length=10, choices=SEX_CHOICES, blank=True, default='')
     activity_level = models.CharField(max_length=15, choices=ACTIVITY_CHOICES, default='MODERATE')
     fitness_goal = models.CharField(max_length=30, choices=GOAL_CHOICES, default='HYPERTROPHY')
     unit_preference = models.CharField(max_length=15, choices=UNIT_CHOICES, default='METRIC')
+    timezone = models.CharField(max_length=64, default='UTC')
     bio = models.TextField(blank=True, default='')
 
     def __str__(self):

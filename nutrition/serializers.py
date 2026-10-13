@@ -31,7 +31,8 @@ class MealEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MealEntry
-        fields = ['id', 'meal_type', 'name', 'food', 'servings', 'quantity', 'calories', 'protein_g', 'carbs_g', 'fat_g', 'time_logged']
+        fields = ['id', 'meal_type', 'name', 'food', 'servings', 'quantity', 'calories', 'protein_g', 'carbs_g', 'fat_g', 'time_logged', 'idempotency_key']
+        extra_kwargs = {'idempotency_key': {'write_only': True, 'required': False, 'allow_null': True}}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

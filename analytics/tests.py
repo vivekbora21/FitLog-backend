@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
 from users.models import User
-from workouts.models import JourneyProgram, ProgramDay, Routine, WorkoutSession
+from workouts.models import CardioEntry, JourneyProgram, ProgramDay, Routine, WorkoutSession
 from progress.models import DailyLog, WeightEntry
 from nutrition.models import MacroTarget, NutritionDay, MealEntry
 from analytics.pacing import resolve_start_weight, resolve_target_weekly_rate, resolve_target_weight, calculate_journey_pacing
@@ -30,6 +30,23 @@ class AnalyticsAdherenceTests(TestCase):
         self.assertIn('protein', adherence)
         self.assertIn('water', adherence)
         self.assertIn('cardio', adherence)
+
+    def test_standalone_cardio_entry_counts_toward_weekly_calories_burned(self):
+        """Regression test: cardio logged outside a workout session used to be
+        invisible to the weekly calories-burned figure on the Progress Activity tab."""
+        from users.models import UserProfile
+        UserProfile.objects.create(user=self.user, weight_kg=75)
+        CardioEntry.objects.create(
+            user=self.user,
+            date=date.today(),
+            modality='ROWING',
+            duration_minutes=30,
+            completed=True,
+            calories=250,
+        )
+        response = self.client.get('/api/analytics/dashboard/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['adherence']['calories_burned']['actual'], 250)
 
     def test_dashboard_stats_adherence_matches_pacing_with_program(self):
         routine = Routine.objects.create(
@@ -358,3 +375,92 @@ class RightPathPacingEngineTests(TestCase):
         self.assertEqual(program.cardio_target_for_day(31), 150)
         # Short plans still get a full first week in the early phase.
         self.assertEqual(JourneyProgram(duration_days=14).early_cardio_phase_days, 7)
+
+
+class EngineBackedPacingDispatchTests(TestCase):
+    """Spec v1.6 section 7.3: `calculate_journey_pacing` must read a plan's
+    stored `predicted_weekly_change_kg` instead of recomputing it when the
+    plan is engine-backed (`engine_version` is not null), while a legacy
+    plan (`engine_version IS NULL`) must go through the exact same
+    resolution it always has. See the branch at the top of
+    `calculate_journey_pacing` in analytics/pacing.py."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="engine_pacing@example.com",
+            username="engine_pacing",
+            password="testpassword123",
+        )
+        self.start_d = date.today() - timedelta(days=14)
+
+    def test_legacy_plan_pacing_is_unaffected_by_the_engine_dispatch(self):
+        # Regression pin: engine_version is null here, so this must take the
+        # exact same resolve_target_weekly_rate(...) path (and therefore the
+        # exact same numeric output) as before the dispatch branch existed.
+        program = JourneyProgram.objects.create(
+            user=self.user,
+            name="Legacy Cut 60",
+            mode="CUT",
+            current_day=14,
+            duration_days=60,
+            active=True,
+            start_date=self.start_d,
+            start_weight_kg=80.0,
+            target_weight_kg=75.7,
+            target_weekly_rate_kg=-0.5,
+        )
+        pacing = calculate_journey_pacing(self.user, program)
+        self.assertIsNone(pacing['engine_version'])
+        self.assertIsNone(pacing['precision'])
+        self.assertEqual(pacing['velocity']['target_weekly_rate'], -0.5)
+        self.assertEqual(pacing['velocity']['target_today'], round(80.0 + (-0.5 * (13 / 7.0)), 2))
+        self.assertEqual(pacing['velocity']['expected_final_weight'], round(80.0 + (-0.5 * (60 / 7.0)), 2))
+
+    def test_engine_backed_calorie_projected_plan_uses_stored_predicted_rate(self):
+        # target_weekly_rate_kg (the legacy field) is deliberately set to a
+        # different, stale value here -- the stored engine prediction must
+        # win for an engine-backed plan, not the legacy field/derivation.
+        program = JourneyProgram.objects.create(
+            user=self.user,
+            name="Engine Cut 60",
+            mode="CUT",
+            current_day=14,
+            duration_days=60,
+            active=True,
+            start_date=self.start_d,
+            start_weight_kg=80.0,
+            target_weight_kg=75.0,
+            target_weekly_rate_kg=-0.5,
+            engine_version="1.0.0",
+            precision="calorie_projected",
+            target_calories=2200,
+            predicted_weekly_change_kg=-0.42,
+        )
+        pacing = calculate_journey_pacing(self.user, program)
+        self.assertEqual(pacing['engine_version'], "1.0.0")
+        self.assertEqual(pacing['precision'], "calorie_projected")
+        self.assertEqual(pacing['velocity']['target_weekly_rate'], -0.42)
+
+    def test_engine_backed_maintenance_plan_falls_back_to_legacy_resolution(self):
+        # Directional/maintenance plans never get a predicted_weekly_change_kg
+        # from the engine (spec 7.3: "not a weight target" for these) -- the
+        # trajectory-curve baseline falls back to the same mode-default
+        # resolution a legacy plan would use.
+        program = JourneyProgram.objects.create(
+            user=self.user,
+            name="Engine Habit",
+            mode="HABIT",
+            current_day=14,
+            duration_days=30,
+            active=True,
+            start_date=self.start_d,
+            start_weight_kg=80.0,
+            engine_version="1.0.0",
+            precision="maintenance",
+            target_calories=2700,
+            predicted_weekly_change_kg=None,
+        )
+        pacing = calculate_journey_pacing(self.user, program)
+        self.assertEqual(pacing['engine_version'], "1.0.0")
+        self.assertEqual(pacing['precision'], "maintenance")
+        self.assertEqual(pacing['velocity']['target_weekly_rate'], 0.0)

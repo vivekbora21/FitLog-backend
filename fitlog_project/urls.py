@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from users.views import (
-    RegisterView, LoginView, MeView, ChangePasswordView,
+    RegisterView, LoginView, LogoutView, MeView, ChangePasswordView,
     PasswordResetRequestView, PasswordResetConfirmView, DeleteAccountView,
 )
 from gyms.views import GymViewSet
@@ -48,6 +48,7 @@ urlpatterns = [
     path('api/auth/register/', RegisterView.as_view(), name='register'),
     path('api/auth/login/', LoginView.as_view(), name='token_obtain_pair'),
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/auth/logout/', LogoutView.as_view(), name='logout'),
     path('api/auth/me/', MeView.as_view(), name='auth_me'),
     path('api/auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('api/auth/password-reset/', PasswordResetRequestView.as_view(), name='password_reset'),

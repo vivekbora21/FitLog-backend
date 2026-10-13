@@ -1,25 +1,55 @@
 from datetime import date, timedelta
+from django.db import transaction, IntegrityError
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import viewsets, permissions, status
 from rest_framework.views import APIView
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from rest_framework.response import Response
 from .models import MacroTarget, NutritionDay, MealEntry
 from .serializers import MacroTargetSerializer, NutritionDaySerializer, MealEntrySerializer, FoodSerializer, foods_visible_to
 from .targets import calculate_recommended_targets, get_or_create_macro_target, resolve_target_update, targets_payload, exercise_calories_today, TargetTimeline
 from workouts.models import JourneyProgram
 
+# BUG-31: a client-supplied log date had no server-side bound at all — a manipulated
+# device clock/timezone could create or view entries for an arbitrary past or future
+# date. Generous on purpose (years of real backfilling is legitimate; a bad clock is not).
+MAX_LOG_DATE_PAST_YEARS = 5
+MAX_LOG_DATE_FUTURE_DAYS = 1
+
+
+class InvalidLogDate(ValueError):
+    pass
+
+
+def parse_bounded_log_date(date_str, today=None):
+    """Parses a client-supplied YYYY-MM-DD date for nutrition logging, bounded to a
+    plausible range around `today` (the server's resolved local today). Raises
+    InvalidLogDate on a malformed string or an implausible date; callers turn that into a
+    clean 400 instead of silently creating/looking up data for a nonsense date."""
+    today = today or timezone.localdate()
+    try:
+        parsed = date.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        raise InvalidLogDate(f'Invalid date format: {date_str!r} (use YYYY-MM-DD).')
+    earliest = today - timedelta(days=365 * MAX_LOG_DATE_PAST_YEARS)
+    latest = today + timedelta(days=MAX_LOG_DATE_FUTURE_DAYS)
+    if parsed < earliest or parsed > latest:
+        raise InvalidLogDate(f'Date must be between {earliest.isoformat()} and {latest.isoformat()}.')
+    return parsed
+
+
 class NutritionDayView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, date_str=None):
         if not date_str or date_str == 'today':
-            target_date = date.today()
+            target_date = timezone.localdate()
         else:
             try:
-                target_date = date.fromisoformat(date_str)
-            except ValueError:
-                target_date = date.today()
+                target_date = parse_bounded_log_date(date_str)
+            except InvalidLogDate as err:
+                return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
 
         day, _ = NutritionDay.objects.get_or_create(user=request.user, date=target_date)
         target = get_or_create_macro_target(request.user)
@@ -65,9 +95,15 @@ class NutritionDayView(APIView):
         })
 
     def patch(self, request, date_str=None):
-        target_date = date.today() if not date_str or date_str == 'today' else date.fromisoformat(date_str)
+        if not date_str or date_str == 'today':
+            target_date = timezone.localdate()
+        else:
+            try:
+                target_date = parse_bounded_log_date(date_str)
+            except InvalidLogDate as err:
+                return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
         day, _ = NutritionDay.objects.get_or_create(user=request.user, date=target_date)
-        
+
         water = request.data.get('water_consumed_ml')
         if water is not None:
             day.water_consumed_ml = water
@@ -84,9 +120,34 @@ class MealEntryViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         date_str = self.request.data.get('date')
-        target_date = date.fromisoformat(date_str) if date_str else date.today()
+        if date_str:
+            try:
+                target_date = parse_bounded_log_date(date_str)
+            except InvalidLogDate as err:
+                raise DRFValidationError({'date': [str(err)]})
+        else:
+            target_date = timezone.localdate()
         day, _ = NutritionDay.objects.get_or_create(user=self.request.user, date=target_date)
-        serializer.save(nutrition_day=day)
+
+        idempotency_key = serializer.validated_data.get('idempotency_key')
+        if idempotency_key:
+            existing = MealEntry.objects.filter(nutrition_day=day, idempotency_key=idempotency_key).first()
+            if existing:
+                serializer.instance = existing
+                return
+
+        try:
+            with transaction.atomic():
+                serializer.save(nutrition_day=day)
+        except IntegrityError:
+            # A concurrent retry with the same key won the race between our check above
+            # and this insert — replay its entry instead of failing.
+            if idempotency_key:
+                existing = MealEntry.objects.filter(nutrition_day=day, idempotency_key=idempotency_key).first()
+                if existing:
+                    serializer.instance = existing
+                    return
+            raise
 
 class MacroTargetView(APIView):
     """
@@ -241,11 +302,11 @@ class RepeatYesterdayView(APIView):
         target_date_str = request.data.get('date')
         if target_date_str:
             try:
-                target_date = date.fromisoformat(target_date_str)
-            except ValueError:
-                target_date = date.today()
+                target_date = parse_bounded_log_date(target_date_str)
+            except InvalidLogDate as err:
+                return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            target_date = date.today()
+            target_date = timezone.localdate()
 
         yesterday = target_date - timedelta(days=1)
         yesterday_day = NutritionDay.objects.filter(user=request.user, date=yesterday).first()
@@ -305,7 +366,7 @@ class NutritionHistoryView(APIView):
             days = 30
         days = min(max(1, days), 90)
 
-        today = date.today()
+        today = timezone.localdate()
         date_from = request.query_params.get('date_from')
         date_to = request.query_params.get('date_to')
         try:
@@ -314,7 +375,7 @@ class NutritionHistoryView(APIView):
         except ValueError:
             return Response({'detail': 'date_from and date_to must use YYYY-MM-DD.'}, status=400)
         start_date = min(range_start, range_end)
-        today = min(max(range_end, start_date), date.today())
+        today = min(max(range_end, start_date), timezone.localdate())
 
         # Prefetch days and meals for user in range
         nutrition_days = (
@@ -398,7 +459,7 @@ class NutritionHistoryView(APIView):
             })
 
         # Calculate weekly nutrition summaries (Monday-Sunday weeks)
-        weeks = build_weekly_nutrition_summaries(history_list, today, mode, target_type)
+        weeks = build_weekly_nutrition_summaries(history_list, today, mode, target_type, timeline)
 
         return Response({
             'history': history_list,
@@ -419,7 +480,7 @@ class NutritionHistoryView(APIView):
         })
 
 
-def build_weekly_nutrition_summaries(history_list, today, mode, target_type):
+def build_weekly_nutrition_summaries(history_list, today, mode, target_type, timeline):
     history_by_date = {item['date']: item for item in history_list}
     current_monday = today - timedelta(days=today.weekday())
     earliest_date_str = history_list[-1]['date'] if history_list else today.isoformat()
@@ -456,6 +517,9 @@ def build_weekly_nutrition_summaries(history_list, today, mode, target_type):
                     'target_calories': hist_item['target_calories'],
                 })
             else:
+                # Outside the fetched history range (e.g. the oldest partial week, whose
+                # Monday predates the requested window) — still resolve this day's real
+                # target from the user's target history instead of a fixed fallback value.
                 days_in_week.append({
                     'date': d_str,
                     'weekday': d.strftime('%a'),
@@ -468,7 +532,7 @@ def build_weekly_nutrition_summaries(history_list, today, mode, target_type):
                     'has_logged': False,
                     'is_today': is_today,
                     'is_future': is_future,
-                    'target_calories': 2200,
+                    'target_calories': timeline.on(d).daily_calories,
                 })
 
         logged_days = [d for d in days_in_week if d['has_logged']]
@@ -481,11 +545,16 @@ def build_weekly_nutrition_summaries(history_list, today, mode, target_type):
         avg_water_ml = round(sum(d['water_consumed_ml'] for d in logged_days) / logged_count) if logged_count > 0 else 0
 
         first_day_hist = next((history_by_date.get((w_monday + timedelta(days=i)).isoformat()) for i in range(7) if (w_monday + timedelta(days=i)).isoformat() in history_by_date), None)
-        t_cal = first_day_hist['target_calories'] if first_day_hist else 2200
-        t_pro = first_day_hist['target_protein'] if first_day_hist else 160
-        t_carb = first_day_hist['target_carbs'] if first_day_hist else 240
-        t_fat = first_day_hist['target_fat'] if first_day_hist else 65
-        t_water = first_day_hist['target_water'] if first_day_hist else 2500
+        # In practice every week in this loop overlaps the fetched history range (it's
+        # derived from that same range's bounds), so first_day_hist is always found — but
+        # if that ever stops holding, resolve the week's real target instead of a fixed
+        # placeholder rather than silently showing a number that isn't this user's target.
+        week_target = timeline.on(w_monday)
+        t_cal = first_day_hist['target_calories'] if first_day_hist else week_target.daily_calories
+        t_pro = first_day_hist['target_protein'] if first_day_hist else week_target.protein_g
+        t_carb = first_day_hist['target_carbs'] if first_day_hist else week_target.carbs_g
+        t_fat = first_day_hist['target_fat'] if first_day_hist else week_target.fat_g
+        t_water = first_day_hist['target_water'] if first_day_hist else week_target.water_ml
 
         cal_diff = avg_calories - t_cal if logged_count > 0 else 0
         net_calorie_diff = cal_diff * logged_count

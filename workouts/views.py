@@ -4,18 +4,20 @@ from datetime import date, timedelta
 from collections import Counter
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
 from django.db import models, transaction
+from django.db.models import ProtectedError
 from django.db.models import Count, Q
 from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, WorkoutExercise, JourneyProgram, ProgramDay, CardioEntry, ProgramDayExerciseSwap
 from progress.records import recompute_personal_records
 from .serializers import RoutineSerializer, AssignedWorkoutSerializer, WorkoutSessionSerializer, ProgramDaySerializer, CardioEntrySerializer
 from exercises.models import Exercise
 from memberships.models import TrainerClientAssignment, GymMembership
-from progress.models import WeightEntry, BodyMeasurement, PersonalRecord
+from progress.models import WeightEntry, BodyMeasurement, PersonalRecord, DailyLog
+from nutrition.models import NutritionDay
 from nutrition.targets import TargetTimeline, calculate_recommended_targets, get_or_create_macro_target
 from core.models import AuditLog
 from notifications.models import Notification
@@ -153,6 +155,43 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'duration_days': program.duration_days,
             },
             'today': ProgramDaySerializer(day, context={'request': request}).data if day else None
+        })
+
+    @action(detail=False, methods=['get'], url_path='day-status')
+    def day_status(self, request):
+        """
+        Cheap check for a client holding an unfinished local draft for a given date:
+        is that day already considered done server-side, by any route (a real logged
+        session, a self-reported 'Completed' day, or a program day marked complete)?
+        If so, offering "Resume" on a stale local draft risks a confusing duplicate
+        (BUG-09) — the client should offer to discard the draft instead.
+        """
+        date_str = request.query_params.get('date')
+        try:
+            requested = date.fromisoformat(date_str) if date_str else timezone.localdate()
+        except ValueError:
+            return Response({'detail': 'Invalid date format (use YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
+
+        sessions = WorkoutSession.objects.filter(user=request.user, started_at__date=requested).order_by('started_at')
+        session = sessions.first()
+
+        daily_log = DailyLog.objects.filter(user=request.user, date=requested).first()
+        self_reported_completed = bool(daily_log and daily_log.day_status == 'COMPLETED')
+
+        program_day_completed = False
+        program = JourneyProgram.objects.filter(user=request.user, active=True).first()
+        if program:
+            day_number = (requested - program.start_date).days + 1
+            pd = program.days.filter(day_number=day_number).first()
+            program_day_completed = bool(pd and pd.status == 'COMPLETED')
+
+        return Response({
+            'date': requested.isoformat(),
+            'has_session': session is not None,
+            'session_id': str(session.id) if session else None,
+            'self_reported_completed': self_reported_completed,
+            'program_day_completed': program_day_completed,
+            'is_already_done': session is not None or self_reported_completed or program_day_completed,
         })
 
     @action(detail=False, methods=['get'], url_path='plan')
@@ -305,7 +344,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
 
         start_date = program.start_date
         end_date = start_date + timedelta(days=program.duration_days - 1)
-        today = date.today()
+        today = timezone.localdate()
         range_end = min(end_date, today)
 
         weight_log = list(
@@ -487,7 +526,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         blueprint = data.get('blueprint')
 
         # Plan length comes from the member: either a day count or a target end date.
-        start_date = date.today()
+        start_date = timezone.localdate()
         raw_end_date = data.get('end_date')
         try:
             if raw_end_date:
@@ -683,6 +722,28 @@ class RoutineViewSet(viewsets.ModelViewSet):
             models.Q(user=user) | models.Q(gym_id__in=user_gym_ids)
         ).prefetch_related('exercises__exercise').distinct()
 
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if instance.gym_id:
+            # A gym template: only that gym's owner/trainer may remove it — any
+            # active member can currently see and delete it, destroying other
+            # members' assigned-workout history in the cascade.
+            is_gym_manager = GymMembership.objects.filter(
+                user=user, gym_id=instance.gym_id, status='ACTIVE', role__in=('OWNER', 'TRAINER')
+            ).exists()
+            if not is_gym_manager:
+                raise PermissionDenied('Only the gym owner or a trainer can delete a shared routine template.')
+        elif instance.user_id != user.id:
+            raise PermissionDenied('You can only delete your own routine.')
+
+        try:
+            instance.delete()
+        except ProtectedError:
+            raise ValidationError(
+                'This routine is scheduled in an active training program and cannot be deleted. '
+                'Remove it from the program first.'
+            )
+
 class AssignedWorkoutViewSet(viewsets.ModelViewSet):
     serializer_class = AssignedWorkoutSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -751,7 +812,7 @@ class CalorieBurnHistoryView(APIView):
             days = 30
         days = min(max(1, days), 365)
 
-        today = date.today()
+        today = timezone.localdate()
         start_date = today - timedelta(days=days - 1)
 
         sessions = (
@@ -761,21 +822,34 @@ class CalorieBurnHistoryView(APIView):
         by_day = {}
         for s in sessions:
             d = s.started_at.date()
-            entry = by_day.setdefault(d, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0})
+            entry = by_day.setdefault(d, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0, 'cardio_entry_count': 0})
             entry['calories_burned'] += s.total_calories() or 0
             entry['session_count'] += 1
             entry['duration_seconds'] += s.duration_seconds or 0
 
+        # Standalone cardio entries (not tied to a session) aren't covered by
+        # WorkoutSession.total_calories() above, so fold their own calorie estimate
+        # in separately. Session-linked entries are skipped here since their calories
+        # are already counted via the session's sets.
+        standalone_cardio = CardioEntry.objects.filter(
+            user=request.user, date__gte=start_date, completed=True, session__isnull=True
+        )
+        for c in standalone_cardio:
+            entry = by_day.setdefault(c.date, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0, 'cardio_entry_count': 0})
+            entry['calories_burned'] += c.calories or 0
+            entry['duration_seconds'] += (c.duration_minutes or 0) * 60
+            entry['cardio_entry_count'] += 1
+
         history = []
         for i in range(days):
             d = today - timedelta(days=i)
-            entry = by_day.get(d, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0})
+            entry = by_day.get(d, {'calories_burned': 0, 'session_count': 0, 'duration_seconds': 0, 'cardio_entry_count': 0})
             history.append({
                 'date': d.isoformat(),
                 'calories_burned': entry['calories_burned'],
                 'session_count': entry['session_count'],
                 'duration_seconds': entry['duration_seconds'],
-                'has_workout': entry['session_count'] > 0,
+                'has_workout': entry['session_count'] > 0 or entry['cardio_entry_count'] > 0,
             })
 
         return Response({'history': history})
