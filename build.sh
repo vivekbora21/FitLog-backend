@@ -12,4 +12,5 @@ if [ "${SEED_ON_BUILD:-true}" = "true" ]; then
     python manage.py seed_exercises
     python manage.py seed_fitlog_data
     python manage.py seed_blueprints
+    python manage.py seed_training_splits
 fi
