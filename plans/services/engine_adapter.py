@@ -161,6 +161,7 @@ def _engine_macro_override(macro_override):
 #: [0, 1, 2, 3]) would spuriously trip V-11 CONSECUTIVE_DAYS, which is a
 #: real validation rule since Phase 2, not just a length check.
 _DEFAULT_SPREAD_BY_DAYS_PER_WEEK = {
+    2: [0, 3],             # Mon/Thu
     3: [0, 2, 4],        # Mon/Wed/Fri
     4: [0, 1, 3, 5],     # Mon/Tue/Thu/Sat
     5: [0, 1, 3, 4, 5],  # Mon/Tue/Thu/Fri/Sat

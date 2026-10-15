@@ -1,4 +1,4 @@
-from rest_framework import status, permissions
+from rest_framework import status, permissions, renderers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -172,6 +172,36 @@ class PasswordResetConfirmView(APIView):
         reset.save(update_fields=['used', 'updated_at'])
         revoke_all_tokens_for_user(user)
         return Response({'detail': 'Password updated. You can sign in now.'})
+
+
+class PDFRenderer(renderers.BaseRenderer):
+    media_type = 'application/pdf'
+    format = 'pdf'
+    charset = None
+    render_style = 'binary'
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+class ExportUserDataView(APIView):
+    """Returns the signed-in user's full data as a PDF report, for self-service
+    data portability (App Store / Play / GDPR-style requirement)."""
+    permission_classes = [permissions.IsAuthenticated]
+    # DRF's default content negotiation only advertises JSON/browsable-API, so an
+    # `Accept: application/pdf` request (as sent by both clients) would otherwise
+    # be rejected with 406 before this view's get() ever runs.
+    renderer_classes = [PDFRenderer]
+
+    def get(self, request):
+        from django.http import HttpResponse
+        from .exports import build_export_pdf
+
+        pdf_bytes = build_export_pdf(request.user)
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        filename = f'fitlog-export-{timezone.now().strftime("%Y-%m-%d")}.pdf'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
 
 class DeleteAccountView(APIView):

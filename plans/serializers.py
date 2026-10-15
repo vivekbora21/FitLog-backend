@@ -25,6 +25,9 @@ class TrainingSplitSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'slug', 'name', 'description', 'days_per_week',
             'workout_templates', 'is_active', 'display_order',
+            'experience_levels', 'compatible_goals', 'rest_days', 'muscle_groups',
+            'equipment_requirements', 'estimated_session_minutes', 'weekly_volume',
+            'progression_strategy', 'recovery_rules', 'approval_status', 'catalog_version',
         ]
 
 # Modes where a large goal-weight swing doesn't make sense (strength/skill focus
@@ -32,12 +35,11 @@ class TrainingSplitSerializer(serializers.ModelSerializer):
 TRIVIAL_GOAL_MODES = ('FOCUS', 'HABIT')
 TRIVIAL_GOAL_DELTA_KG = 2.0
 
-# Spec v1.6 section 4.3/V-05 GOAL_WEIGHT_REQUIRED, and defect #3 from
-# section 1: Cut/Bulk cannot compute a calorie_delta without a goal weight
-# (the plan_engine itself leaves target_calories null + fires a `block`
-# message in that case -- see workouts/plan_engine/engine.py). Mirrors the
-# engine's own behavior at the request layer instead of letting the request
-# through to get a null, "can_start: false" preview/plan.
+# Spec v1.6 section 4.3/V-05 GOAL_WEIGHT_REQUIRED: Cut/Bulk cannot compute
+# a calorie_delta without a goal weight. The plan engine itself flags this with
+# a block message ('GOAL_WEIGHT_REQUIRED') and returns can_start = False on preview
+# (spec section 5 & section 10 Case B). For /api/plans/options/, a goal weight is
+# strictly required in the serializer to generate comparisons.
 GOAL_WEIGHT_REQUIRED_MODES = ('CUT', 'BULK')
 
 # Spec v1.6 section 4.3: only meaningful for RECOMP (the engine ignores it
@@ -64,7 +66,7 @@ class PlanPreviewRequestSerializer(serializers.Serializer):
     duration_days = serializers.IntegerField(
         min_value=JourneyProgram.MIN_DURATION_DAYS, max_value=JourneyProgram.MAX_DURATION_DAYS
     )
-    days_per_week = serializers.IntegerField(min_value=3, max_value=6)
+    days_per_week = serializers.IntegerField(min_value=2, max_value=6)
     # New field (spec v1.6 section 6.2/6.7): which equipment the member has
     # access to, used only to gate split selection through SPLIT_APPROVAL
     # (V-21 NO_SUPPORTED_SPLIT) -- see plans/split_approval.py. Optional with
@@ -133,11 +135,6 @@ class PlanPreviewRequestSerializer(serializers.Serializer):
             raise serializers.ValidationError('weekdays must contain exactly days_per_week entries.')
 
         goal_weight_kg = attrs.get('goal_weight_kg')
-        if mode in GOAL_WEIGHT_REQUIRED_MODES and goal_weight_kg is None:
-            raise serializers.ValidationError(
-                {'goal_weight_kg': f'goal_weight_kg is required for {mode} mode.'}
-            )
-
         if mode in TRIVIAL_GOAL_MODES and goal_weight_kg is not None:
             delta = abs(goal_weight_kg - attrs['current_weight_kg'])
             if delta > TRIVIAL_GOAL_DELTA_KG:
@@ -151,6 +148,17 @@ class PlanCreateRequestSerializer(PlanPreviewRequestSerializer):
     name = serializers.CharField(required=False)
 
 
+class GoalWeightRecommendationRequestSerializer(serializers.Serializer):
+    """Input for `PlanViewSet.recommended_goal_weight` -- just enough to compute a
+    safe-paced goal via `plan_generator.recommend_goal_weight`."""
+    mode = serializers.ChoiceField(choices=JourneyProgram.MODE_CHOICES)
+    current_weight_kg = serializers.FloatField()
+    height_cm = serializers.FloatField()
+    duration_days = serializers.IntegerField(
+        min_value=JourneyProgram.MIN_DURATION_DAYS, max_value=JourneyProgram.MAX_DURATION_DAYS
+    )
+
+
 class PlanOptionsRequestSerializer(serializers.Serializer):
     """Input for `PlanViewSet.options` ("choose from multiple"): everything
     `PlanPreviewRequestSerializer` needs EXCEPT `days_per_week`/`weekdays`/
@@ -158,6 +166,7 @@ class PlanOptionsRequestSerializer(serializers.Serializer):
     option per approved (days_per_week, split) combination at the member's
     equipment level, not take days_per_week as an input."""
     mode = serializers.ChoiceField(choices=JourneyProgram.MODE_CHOICES)
+    days_per_week = serializers.IntegerField(min_value=2, max_value=6, required=False)
     duration_days = serializers.IntegerField(
         min_value=JourneyProgram.MIN_DURATION_DAYS, max_value=JourneyProgram.MAX_DURATION_DAYS
     )
@@ -167,6 +176,7 @@ class PlanOptionsRequestSerializer(serializers.Serializer):
     experience = serializers.ChoiceField(
         choices=['BEGINNER', 'INTERMEDIATE', 'ADVANCED'], required=False, default='INTERMEDIATE'
     )
+    session_duration_minutes = serializers.IntegerField(min_value=20, max_value=180, required=False)
     activity_level = serializers.ChoiceField(
         choices=[c[0] for c in UserProfile.ACTIVITY_CHOICES], required=False, default='MODERATE'
     )

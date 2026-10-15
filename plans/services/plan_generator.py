@@ -21,6 +21,7 @@ from datetime import timedelta
 
 from django.utils import timezone as django_timezone
 
+from workouts.plan_engine import config as plan_config
 from workouts.plan_engine.config import CALORIE_FLOOR_KCAL
 from workouts.plan_engine.rounding import round_half_up
 
@@ -84,6 +85,40 @@ MODE_SAFE_THRESHOLD_KG_PER_WEEK = {
     'FOCUS': 0.05,
     'HABIT': 0.05,
 }
+
+# Direction of weight change implied by each mode (CUT loses, BULK gains, RECOMP trends
+# down slightly, FOCUS/HABIT hold steady). Mirrors (without duplicating the inequality
+# checks of) `_goal_direction_valid` in workouts.plan_engine.engine, which only validates
+# a *given* goal's direction -- there's no existing forward "suggest a goal" helper there.
+MODE_GOAL_DIRECTION = {
+    'CUT': -1,
+    'BULK': 1,
+    'RECOMP': -1,
+    'FOCUS': 0,
+    'HABIT': 0,
+}
+
+
+def recommend_goal_weight(*, mode, current_weight_kg, height_cm, duration_days):
+    """Return a conservative, BMI-aware first goal.
+
+    A duration-based pace alone can produce an unsafe suggestion for long
+    plans (for example, a year of cutting at 0.75 kg/week). Keep the initial
+    recommendation to at most 10% of starting weight and never below the
+    standard adult BMI floor. Users can reassess with a clinician after this
+    first milestone.
+    """
+    weeks = duration_days / 7
+    pace_delta = MODE_SAFE_THRESHOLD_KG_PER_WEEK[mode] * weeks
+    if MODE_GOAL_DIRECTION[mode] < 0:
+        max_initial_change = current_weight_kg * 0.10
+        delta = min(pace_delta, max_initial_change)
+        bmi_floor = plan_config.MIN_GOAL_BMI * (height_cm / 100) ** 2
+        return round(max(current_weight_kg - delta, bmi_floor), 1)
+    if MODE_GOAL_DIRECTION[mode] > 0:
+        delta = min(pace_delta, current_weight_kg * 0.10)
+        return round(current_weight_kg + delta, 1)
+    return round(current_weight_kg, 1)
 
 
 def calculate_targets(*, weight_kg, height_cm, age_years, sex, days_per_week, mode,

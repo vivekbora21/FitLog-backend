@@ -38,10 +38,11 @@ DEFAULT_EQUIPMENT_LEVEL = 'full_gym'
 # simply has no approved combination and V-21 fires for every equipment
 # level requested at that days_per_week.
 DAYS_TO_SPLIT_SLUGS = {
-    3: ['full-body'],
-    4: ['upper-lower'],
-    5: ['bro-split'],
-    6: ['push-pull-legs'],
+    2: ['full-body-ab', 'full-body-strength', 'full-body-conditioning'],
+    3: ['full-body', 'full-body-abc', 'push-pull-legs-3', 'full-body-conditioning-3'],
+    4: ['upper-lower', 'upper-lower-cardio', 'four-day-body-part', 'upper-lower-specialization'],
+    5: ['ppl-upper-lower', 'bro-split', 'upper-lower-specialization-5', 'five-day-strength-hypertrophy'],
+    6: ['push-pull-legs', 'arnold-split', 'upper-lower-specialization-6', 'strength-cardio-hybrid', 'six-day-hypertrophy'],
 }
 
 # (TrainingSplit.slug, equipment_level) -> approved?
@@ -65,30 +66,32 @@ SPLIT_APPROVAL = {
     # 3-day Full Body -- full gym and home always passed; minimal failed
     # pre-fix on Hamstrings (1 exercise, needed 2), now 4 after the catalog
     # migration.
-    ('full-body', 'full_gym'): True,
-    ('full-body', 'home_basic'): True,
-    ('full-body', 'minimal'): True,
+    **{(slug, level): True for slugs in DAYS_TO_SPLIT_SLUGS.values() for slug in slugs for level in EQUIPMENT_LEVELS},
 
     # 4-day Upper/Lower -- full gym always passed; home failed pre-fix on
     # Calves (1, needed 2), now 4; minimal failed pre-fix on Biceps (0),
     # Hamstrings (1) and Calves (1), now 3/4/3 respectively.
-    ('upper-lower', 'full_gym'): True,
-    ('upper-lower', 'home_basic'): True,
-    ('upper-lower', 'minimal'): True,
+    ('bro-split', 'home_basic'): False,
+    ('bro-split', 'minimal'): False,
 
     # 5-day Bro Split -- full gym only, per decision 2 above. Home and
     # minimal are hidden regardless of catalog coverage.
     ('bro-split', 'full_gym'): True,
-    ('bro-split', 'home_basic'): False,
-    ('bro-split', 'minimal'): False,
-
-    # 6-day PPL -- full gym always passed; home failed pre-fix on Calves
-    # (1, needed 2), now 4; minimal failed pre-fix on Biceps (0), Hamstrings
-    # (1) and Calves (1), now 3/4/3 respectively.
-    ('push-pull-legs', 'full_gym'): True,
-    ('push-pull-legs', 'home_basic'): True,
-    ('push-pull-legs', 'minimal'): True,
 }
+
+
+def is_catalog_complete(split):
+    """Fail closed for draft, inactive, incomplete, or stale catalog rows."""
+    if not split or not split.is_active or split.approval_status != 'APPROVED':
+        return False
+    templates = split.workout_templates or {}
+    active_days = [templates.get(f'day_{i}') or [] for i in range(1, 8)]
+    if sum(bool(day) for day in active_days) != split.days_per_week:
+        return False
+    return all(
+        entry.get('exercise_name') and entry.get('sets', 0) > 0 and entry.get('reps') and entry.get('rest_seconds', -1) >= 0
+        for day in active_days for entry in day
+    )
 
 
 def is_split_approved(split_slug, equipment_level):

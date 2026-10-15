@@ -348,6 +348,26 @@ class PlanApiTests(TestCase):
         response = self.client.post('/api/plans/preview/', payload, format='json')
         self.assertEqual(response.status_code, 400)
 
+    def test_blank_goal_weight_cut_preview_returns_200_with_goal_weight_required(self):
+        # Spec v1.6 section 5 & section 10 Case B: blank goal weight on Cut/Bulk returns
+        # can_start = false on preview with code GOAL_WEIGHT_REQUIRED rather than a 400.
+        payload = self.valid_payload()
+        del payload['goal_weight_kg']
+        response = self.client.post('/api/plans/preview/', payload, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data['engine']['can_start'])
+        codes = [m['code'] for m in response.data['engine']['messages']]
+        self.assertIn('GOAL_WEIGHT_REQUIRED', codes)
+
+    def test_blank_goal_weight_cut_create_blocks_with_422(self):
+        # Spec v1.6 section 5: save/create endpoint returns HTTP 422 with the block code.
+        payload = self.valid_payload()
+        del payload['goal_weight_kg']
+        response = self.client.post('/api/plans/', payload, format='json')
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertFalse(response.data['can_start'])
+        self.assertEqual(response.data['code'], 'GOAL_WEIGHT_REQUIRED')
+
     def test_equipment_level_defaults_to_full_gym_unchanged_behavior(self):
         # A caller that never sends equipment_level at all (every existing
         # caller, pre-this-change) must see no behavior change: full_gym is
@@ -550,11 +570,11 @@ class PlanOptionsApiTests(TestCase):
         response = self.client.post('/api/plans/options/', self.valid_payload(), format='json')
         self.assertEqual(response.status_code, 200, response.data)
         options = response.data['options']
-        # full_gym approves one split each at 3/4/5/6 days/week (split_approval.py).
-        self.assertEqual({o['days_per_week'] for o in options}, {3, 4, 5, 6})
-        self.assertEqual({o['split_slug'] for o in options}, {
-            'full-body', 'upper-lower', 'bro-split', 'push-pull-legs',
-        })
+        # The shared catalog exposes every supported frequency and multiple
+        # alternatives at the same frequency (including the six-day regression).
+        self.assertEqual({o['days_per_week'] for o in options}, {2, 3, 4, 5, 6})
+        self.assertGreaterEqual(sum(o['days_per_week'] == 6 for o in options), 5)
+        self.assertIn('push-pull-legs', {o['split_slug'] for o in options})
         for option in options:
             self.assertIn('summary', option)
             self.assertIn('engine', option)
@@ -567,7 +587,7 @@ class PlanOptionsApiTests(TestCase):
         slugs = {o['split_slug'] for o in response.data['options']}
         # bro-split is full_gym-only (split_approval.py decision 2).
         self.assertNotIn('bro-split', slugs)
-        self.assertEqual(slugs, {'full-body', 'upper-lower', 'push-pull-legs'})
+        self.assertGreaterEqual(len(slugs), 10)
 
     def test_missing_goal_weight_for_cut_is_rejected(self):
         payload = self.valid_payload()
@@ -620,7 +640,7 @@ class SplitApprovalConfigTests(TestCase):
         self.assertFalse(is_split_approved('full-body', 'some-made-up-level'))
 
     def test_approved_slugs_for_matches_split_approval_table(self):
-        for days in range(3, 7):
+        for days in range(2, 7):
             for level in EQUIPMENT_LEVELS:
                 expected = [
                     slug for slug in DAYS_TO_SPLIT_SLUGS.get(days, [])
@@ -629,9 +649,7 @@ class SplitApprovalConfigTests(TestCase):
                 self.assertEqual(approved_slugs_for(days, level), expected)
 
     def test_approved_combinations_count_matches_expectation(self):
-        # 3 splits approved at all 3 levels (full-body, upper-lower,
-        # push-pull-legs) + bro-split approved at 1 level (full_gym only).
-        self.assertEqual(len(approved_combinations()), 3 * 3 + 1)
+        self.assertGreaterEqual(len(approved_combinations()), 5 * 3)
 
 
 class SplitApprovalApiTests(TestCase):
@@ -679,16 +697,15 @@ class SplitApprovalApiTests(TestCase):
         self.assertEqual(response.data['code'], 'NO_SUPPORTED_SPLIT')
         self.assertEqual(JourneyProgram.objects.count(), 0)
 
-    def test_implicit_combination_with_no_approved_split_also_blocks(self):
-        # No split_slug given at all -- the only 5-day split in the catalog
-        # (bro-split) isn't approved at minimal, and there is no other
-        # 5-day split to fall back to, so this combination must still block.
+    def test_implicit_combination_uses_an_approved_alternative(self):
+        # No split_slug given at all -- the server chooses an approved 5-day
+        # alternative instead of silently falling back to a mismatched split.
         payload = self.valid_payload(days_per_week=5, weekdays=[1, 2, 3, 4, 6], equipment_level='minimal')
         payload.pop('split_slug', None)
         response = self.client.post('/api/plans/preview/', payload, format='json')
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertFalse(response.data['can_start'])
-        self.assertEqual(response.data['code'], 'NO_SUPPORTED_SPLIT')
+        self.assertNotIn('code', response.data)
+        self.assertEqual(response.data['summary']['training_split'], 'ppl-upper-lower')
 
     def test_approved_split_is_not_blocked(self):
         payload = self.valid_payload(
@@ -709,11 +726,11 @@ class SplitApprovalApiTests(TestCase):
 
     def test_enumeration_every_days_and_equipment_combination(self):
         """Spec acceptance 11.3 / 6.7 bullet 4: enumerate every (days-per-week
-        3-6, equipment-level) combination this release might be asked for,
+        2-6, equipment-level) combination this release might be asked for,
         and assert the API only ever returns or accepts an approved split
         for it -- never an unapproved one, and never a silent 500/other
         failure in place of the V-21 code."""
-        for days in range(3, 7):
+        for days in range(2, 7):
             for level in EQUIPMENT_LEVELS:
                 candidate_slugs = DAYS_TO_SPLIT_SLUGS.get(days, [])
                 slug = candidate_slugs[0] if candidate_slugs else 'no-such-split'
@@ -1049,7 +1066,7 @@ class VolumeCheckEnumerationTests(TestCase):
         approved_pairs = 0
         skipped_pairs = 0
 
-        for days in range(3, 7):
+        for days in range(2, 7):
             slugs = DAYS_TO_SPLIT_SLUGS.get(days, [])
             for slug in slugs:
                 for level in equipment_levels:
@@ -1094,5 +1111,8 @@ class VolumeCheckEnumerationTests(TestCase):
         # bro-split (5 days/week) is approved only at full_gym -- its
         # home_basic/minimal pairs are the only unapproved ones today.
         self.assertEqual(skipped_pairs, 2)
-        self.assertEqual(approved_pairs, 10)
+        self.assertEqual(approved_pairs, sum(
+            1 for slugs in DAYS_TO_SPLIT_SLUGS.values() for slug in slugs
+            for level in equipment_levels if is_split_approved(slug, level)
+        ))
         self.assertEqual(in_range_count + flagged_count, approved_pairs * len(experiences))

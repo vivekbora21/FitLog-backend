@@ -116,7 +116,7 @@ MAX_HEIGHT_CM = 230
 # --- V-02 / V-03 ---------------------------------------------------------
 MIN_DURATION_DAYS = 7
 MAX_DURATION_DAYS = 365
-MIN_DAYS_PER_WEEK = 3
+MIN_DAYS_PER_WEEK = 2
 MAX_DAYS_PER_WEEK = 6
 
 # --- V-06 goal direction ------------------------------------------------

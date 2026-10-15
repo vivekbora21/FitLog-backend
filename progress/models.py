@@ -80,6 +80,13 @@ class PersonalRecord(UUIDTimeStampedModel):
     reps = models.PositiveIntegerField(default=1)
     estimated_one_rep_max = models.FloatField()
     achieved_at = models.DateField()
+    # False right after the first time an exercise is ever logged — that row is just
+    # a baseline, not something the lifter actually beat yet, so it shouldn't be
+    # celebrated as a PR or count toward the "Personal Records" achievement tiers.
+    # Flips to True (and improvement_count increments) only once a later set clears
+    # the eligibility bar in progress/records.py (reps cap + weight-vs-previous-best floor).
+    is_improved = models.BooleanField(default=False)
+    improvement_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ['-estimated_one_rep_max']

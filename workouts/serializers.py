@@ -8,7 +8,7 @@ from .models import Routine, RoutineExercise, AssignedWorkout, WorkoutSession, W
 from exercises.models import Exercise
 from exercises.serializers import ExerciseSerializer
 from progress.models import PersonalRecord
-from progress.records import recompute_personal_records
+from progress.records import recompute_personal_records, MAX_PR_REPS, MIN_PR_WEIGHT_RATIO
 from core.models import AuditLog
 from notifications.models import Notification
 
@@ -92,7 +92,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         for workout_exercise, (sets_data, exercise), created_sets in zip(workout_exercises, all_sets_data, sets_by_exercise):
             for workout_set in created_sets:
                 if (track_prs and workout_set.completed and workout_set.weight_kg > 0 and workout_set.reps > 0
-                        and workout_set.set_type in WORKING_SET_TYPES):
+                        and workout_set.reps <= MAX_PR_REPS and workout_set.set_type in WORKING_SET_TYPES):
                     est_1rm = PersonalRecord.calculate_epley_1rm(workout_set.weight_kg, workout_set.reps)
 
                     pr, created = PersonalRecord.objects.get_or_create(
@@ -106,22 +106,18 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                         }
                     )
                     if created:
-                        new_prs.append({
-                            'id': str(pr.id),
-                            'exercise_name': exercise.name,
-                            'primary_muscle': exercise.primary_muscle.name if exercise.primary_muscle else 'Compound',
-                            'max_weight_kg': pr.max_weight_kg,
-                            'reps': pr.reps,
-                            'estimated_one_rep_max': pr.estimated_one_rep_max,
-                            'achieved_at': str(session.started_at.date()),
-                            'is_first': True,
-                        })
-                    elif est_1rm > pr.estimated_one_rep_max:
+                        # First time this exercise has ever been logged: just a baseline,
+                        # not a celebrated PR — nothing to beat yet.
+                        continue
+                    if (est_1rm > pr.estimated_one_rep_max
+                            and workout_set.weight_kg >= pr.max_weight_kg * MIN_PR_WEIGHT_RATIO):
                         old_1rm = pr.estimated_one_rep_max
                         pr.max_weight_kg = workout_set.weight_kg
                         pr.reps = workout_set.reps
                         pr.estimated_one_rep_max = est_1rm
                         pr.achieved_at = session.started_at.date()
+                        pr.is_improved = True
+                        pr.improvement_count += 1
                         pr.save()
                         new_prs.append({
                             'id': str(pr.id),
@@ -132,7 +128,6 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                             'estimated_one_rep_max': pr.estimated_one_rep_max,
                             'previous_1rm': old_1rm,
                             'achieved_at': str(session.started_at.date()),
-                            'is_first': False,
                         })
 
             muscle_name = exercise.primary_muscle.name if exercise.primary_muscle else ''

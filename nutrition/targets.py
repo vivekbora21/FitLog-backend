@@ -371,8 +371,6 @@ def targets_payload(user, values=None, adjustments=None):
             'weekly_workouts': values['weekly_workouts'] or plan_weekly_workouts(program),
             'weekly_cardio_minutes': (values['weekly_cardio_minutes']
                                       if values['weekly_cardio_minutes'] is not None else plan_weekly_cardio(program)),
-            'weekly_calories_burned': (values['weekly_calories_burned']
-                                       if values['weekly_calories_burned'] is not None else plan_weekly_calories_burned()),
         },
         'suggested': suggested_targets(user, recommended, program),
         'limits': {**TARGET_LIMITS, 'daily_calories': (_calorie_floor(user), MAX_CALORIES)},

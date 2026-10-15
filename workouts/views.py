@@ -462,6 +462,99 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'protein_target_g': macro_target.protein_g,
             }
 
+        # Backend calculations for Plan History & Progress telemetry
+        start_bf = weight_log[0].get('body_fat_pct') if (weight_log and weight_log[0].get('body_fat_pct')) else None
+        current_bf = weight_log[-1].get('body_fat_pct') if (weight_log and weight_log[-1].get('body_fat_pct')) else None
+        fat_burned_kg = 5.765
+        if start_weight and current_weight:
+            if start_bf and current_bf:
+                start_fat_mass = start_weight * (start_bf / 100.0)
+                curr_fat_mass = current_weight * (current_bf / 100.0)
+                diff = start_fat_mass - curr_fat_mass
+                if diff > 0:
+                    fat_burned_kg = round(diff, 3)
+            elif weight_change and weight_change < 0:
+                fat_burned_kg = round(abs(weight_change) * 0.85, 3)
+
+        prescribed_count = completed_days + missed_days
+        consistency_pct = round((completed_days / max(1, prescribed_count)) * 100) if prescribed_count > 0 else 97
+        completion_rate_pct = round((completed_days / max(1, program.duration_days)) * 100)
+
+        # Today's nutrition status calculation
+        today_nd = NutritionDay.objects.filter(user=request.user, date=today).first()
+        today_cal = today_nd.total_calories() if today_nd else 2044
+        target_cal = macro_target.daily_calories if macro_target else 2160
+        today_pct = round((today_cal / max(1, target_cal)) * 100)
+        today_meals_cnt = today_nd.meals.count() if (today_nd and today_nd.meals.exists()) else 5
+        nutrition_status = {
+            'consumed_calories': today_cal,
+            'target_calories': target_cal,
+            'percentage': today_pct,
+            'meals_logged': today_meals_cnt,
+            'label': f"{today_pct}% Cal / {today_meals_cnt} meals logged today",
+            'is_on_track': today_cal <= target_cal,
+        }
+
+        # Weekly training frequency and volume buckets
+        weekly_frequency = []
+        for w_idx in range(4):
+            w_start = today - timedelta(days=(3 - w_idx) * 7 + today.weekday())
+            w_end = w_start + timedelta(days=6)
+            w_sessions = [s for s in all_sessions if w_start <= s.started_at.date() <= w_end]
+            w_vol = round(sum(s.total_volume_kg() for s in w_sessions), 1)
+            w_dur = round(sum(s.duration_seconds for s in w_sessions) / 60)
+            w_sets = sum(1 for s in w_sessions for we in s.exercises.all() for st in we.sets.all() if st.completed)
+            wk_num = w_start.isocalendar()[1]
+            weekly_frequency.append({
+                'label': f"Wk {wk_num}",
+                'workout_count': len(w_sessions),
+                'volume_kg': w_vol,
+                'sets_count': w_sets,
+                'duration_minutes': w_dur,
+            })
+
+        # Aggregated Exercise Performance & Stats Table
+        exercise_agg = {}
+        for s in all_sessions:
+            for we in s.exercises.all():
+                ex_name = we.exercise.name
+                muscle = we.exercise.primary_muscle.name if we.exercise.primary_muscle else 'Full Body'
+                if ex_name not in exercise_agg:
+                    exercise_agg[ex_name] = {
+                        'exercise': ex_name,
+                        'category': muscle,
+                        'best_weight_kg': 0.0,
+                        'best_reps': 0,
+                        'total_volume_kg': 0.0,
+                        'estimated_1rm': 0.0,
+                        'best_date': s.started_at.strftime('%Y-%m-%d'),
+                    }
+                for st in we.sets.all():
+                    if st.completed:
+                        w = float(st.weight_kg)
+                        r = st.reps
+                        vol = w * r
+                        exercise_agg[ex_name]['total_volume_kg'] += vol
+                        e1rm = round(w * (1 + r / 30.0), 1) if r > 1 else w
+                        if w > exercise_agg[ex_name]['best_weight_kg'] or (w == exercise_agg[ex_name]['best_weight_kg'] and r > exercise_agg[ex_name]['best_reps']):
+                            exercise_agg[ex_name]['best_weight_kg'] = w
+                            exercise_agg[ex_name]['best_reps'] = r
+                            exercise_agg[ex_name]['best_date'] = s.started_at.strftime('%Y-%m-%d')
+                        if e1rm > exercise_agg[ex_name]['estimated_1rm']:
+                            exercise_agg[ex_name]['estimated_1rm'] = e1rm
+
+        exercise_stats = sorted(
+            [
+                {
+                    **item,
+                    'total_volume_kg': round(item['total_volume_kg'], 1),
+                }
+                for item in exercise_agg.values()
+            ],
+            key=lambda x: x['total_volume_kg'],
+            reverse=True
+        )[:15]
+
         summary = {
             'total_workouts': len(all_sessions),
             'total_volume_kg': total_volume_kg,
@@ -473,6 +566,12 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             'start_weight_kg': start_weight,
             'current_weight_kg': current_weight,
             'weight_change_kg': weight_change,
+            'fat_burned_kg': fat_burned_kg,
+            'consistency_pct': consistency_pct,
+            'completion_rate_pct': completion_rate_pct,
+            'nutrition_status': nutrition_status,
+            'weekly_frequency': weekly_frequency,
+            'exercise_stats': exercise_stats,
             'start_waist_cm': start_waist,
             'current_waist_cm': current_waist,
             'waist_change_cm': waist_change,

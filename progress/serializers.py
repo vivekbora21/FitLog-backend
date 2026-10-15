@@ -26,7 +26,7 @@ class PersonalRecordSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PersonalRecord
-        fields = ['id', 'exercise', 'exercise_name', 'primary_muscle', 'max_weight_kg', 'reps', 'estimated_one_rep_max', 'achieved_at']
+        fields = ['id', 'exercise', 'exercise_name', 'primary_muscle', 'max_weight_kg', 'reps', 'estimated_one_rep_max', 'achieved_at', 'is_improved', 'improvement_count']
         read_only_fields = ['user']
         extra_kwargs = {
             'estimated_one_rep_max': {'required': False},

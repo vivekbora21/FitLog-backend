@@ -5,14 +5,14 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from users.views import (
     RegisterView, LoginView, LogoutView, MeView, ChangePasswordView,
-    PasswordResetRequestView, PasswordResetConfirmView, DeleteAccountView,
+    PasswordResetRequestView, PasswordResetConfirmView, DeleteAccountView, ExportUserDataView,
 )
 from gyms.views import GymViewSet
 from memberships.views import GymMembershipViewSet, TrainerClientViewSet, GymInvitationViewSet, AcceptInvitationView
 from exercises.views import ExerciseViewSet, MuscleGroupViewSet, EquipmentTypeViewSet
 from workouts.views import WorkoutSessionViewSet, RoutineViewSet, AssignedWorkoutViewSet, CardioEntryViewSet, CalorieBurnHistoryView
 from nutrition.views import NutritionDayView, MealEntryViewSet, MacroTargetView, FoodViewSet, RecommendedMacroTargetView, RecentFoodsView, RepeatYesterdayView, NutritionHistoryView, MealPlanOptionsView
-from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalRecordViewSet, DailyLogViewSet, ProgressPhotoViewSet
+from progress.views import WeightEntryViewSet, BodyMeasurementViewSet, PersonalRecordViewSet, DailyLogViewSet, ProgressPhotoViewSet, PersonalRecordTrendView
 from notifications.views import NotificationViewSet
 from core.views import AuditLogViewSet
 from analytics.views import DashboardStatsView, JourneyPacingStatusView, CalendarDayStatusView
@@ -54,6 +54,7 @@ urlpatterns = [
     path('api/auth/password-reset/', PasswordResetRequestView.as_view(), name='password_reset'),
     path('api/auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     path('api/auth/delete-account/', DeleteAccountView.as_view(), name='delete_account'),
+    path('api/auth/export-data/', ExportUserDataView.as_view(), name='export_user_data'),
 
     # Custom Domain Actions
     path('api/invitations/<uuid:token>/accept/', AcceptInvitationView.as_view(), name='accept_invitation'),
@@ -68,6 +69,7 @@ urlpatterns = [
     path('api/analytics/dashboard/', DashboardStatsView.as_view(), name='dashboard_stats'),
     path('api/analytics/journey-status/', JourneyPacingStatusView.as_view(), name='journey_pacing_status'),
     path('api/analytics/calendar-day-status/', CalendarDayStatusView.as_view(), name='calendar_day_status'),
+    path('api/progress/pr-trend/', PersonalRecordTrendView.as_view(), name='pr_trend'),
 
     # DRF Router endpoints
     path('api/', include(router.urls)),

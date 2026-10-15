@@ -62,6 +62,212 @@ class BodyMeasurementViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        """
+        Computes body measurement KPI summary, ratios, deltas, and symmetry balance on the backend.
+        """
+        user = request.user
+        client_id = request.query_params.get('client_id')
+        if client_id and client_id != str(user.id):
+            if can_view_progress(user, client_id, 'share_body_measurements'):
+                target_user_id = client_id
+            else:
+                return Response({'detail': 'Not authorized to view measurements.'}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            target_user_id = user.id
+
+        measurements = list(BodyMeasurement.objects.filter(user_id=target_user_id).order_by('date'))
+        if not measurements:
+            return Response({
+                'has_data': False,
+                'total_logs': 0,
+                'kpis': None,
+                'overview': [],
+                'symmetry': [],
+                'dates': [],
+                'baseline_date': None,
+                'latest_date': None,
+            })
+
+        baseline = measurements[0]
+        latest = measurements[-1]
+
+        # 1. Waist change calculation
+        waist_baseline = baseline.waist_cm
+        waist_latest = latest.waist_cm
+        waist_diff = round(float(waist_latest - waist_baseline), 1) if (waist_latest is not None and waist_baseline is not None) else None
+        waist_diff_pct = round(abs(waist_diff / float(waist_baseline)) * 100, 1) if (waist_diff is not None and waist_baseline) else None
+        waist_sparkline = [float(m.waist_cm) for m in measurements if m.waist_cm is not None]
+
+        # 2. Shoulder to Waist ratio
+        shoulder_val = latest.shoulders_cm
+        shoulder_to_waist = round(float(shoulder_val / waist_latest), 2) if (shoulder_val and waist_latest) else None
+        shoulder_target = 1.45
+        shoulder_progress_pct = min(100, round((shoulder_to_waist / shoulder_target) * 100)) if shoulder_to_waist else 83
+
+        # 3. Chest to Waist ratio
+        chest_val = latest.chest_cm
+        chest_to_waist = round(float(chest_val / waist_latest), 2) if (chest_val and waist_latest) else None
+        chest_target = 1.20
+        chest_progress_pct = min(100, round((chest_to_waist / chest_target) * 100)) if chest_to_waist else 94
+
+        # 4. Total checkins
+        total_logs = len(measurements)
+
+        # 5. Anatomical site overviews
+        sites = [
+            ('shoulders_cm', 'Shoulders', 'torso', 'hypertrophy', 'shoulders'),
+            ('chest_cm', 'Chest', 'torso', 'hypertrophy', 'chest'),
+            ('waist_cm', 'Waist', 'torso', 'reduction', 'waist'),
+            ('hips_cm', 'Hips', 'torso', 'reduction', 'hips'),
+            ('arms_cm', 'Arms', 'arms', 'hypertrophy', 'arms'),
+            ('thighs_cm', 'Thighs', 'legs', 'hypertrophy', 'thighs'),
+            ('calves_cm', 'Calves', 'legs', 'hypertrophy', 'calves'),
+            ('neck_cm', 'Neck', 'torso', 'neutral', 'neck'),
+        ]
+        overview = []
+        for field, label, category, target_type, icon_type in sites:
+            cur = getattr(latest, field, None)
+            base = getattr(baseline, field, None)
+            cur_f = float(cur) if cur is not None else None
+            base_f = float(base) if base is not None else None
+            diff_f = round(cur_f - base_f, 1) if (cur_f is not None and base_f is not None) else None
+            diff_pct_f = round((diff_f / base_f) * 100, 1) if (diff_f is not None and base_f) else None
+            overview.append({
+                'key': field,
+                'label': label,
+                'category': category,
+                'target_type': target_type,
+                'icon_type': icon_type,
+                'current_cm': cur_f,
+                'baseline_cm': base_f,
+                'diff_cm': diff_f,
+                'diff_pct': diff_pct_f,
+            })
+
+        # 6. Bilateral Symmetry calculation
+        def calc_sym(left, right, label, icon_type):
+            if left is None or right is None:
+                return None
+            l_val = float(left)
+            r_val = float(right)
+            diff = round(abs(l_val - r_val), 1)
+            is_balanced = diff <= 0.4
+            max_v = max(l_val, r_val) or 1
+            return {
+                'label': label,
+                'icon_type': icon_type,
+                'left_cm': l_val,
+                'right_cm': r_val,
+                'diff_cm': diff,
+                'is_balanced': is_balanced,
+                'left_ratio': round((l_val / max_v) * 100),
+                'right_ratio': round((r_val / max_v) * 100),
+            }
+
+        symmetry = [
+            calc_sym(latest.biceps_left_cm, latest.biceps_right_cm, 'Arms / Biceps', 'arms'),
+            calc_sym(latest.thigh_left_cm, latest.thigh_right_cm, 'Thighs / Quads', 'thighs'),
+            calc_sym(latest.calf_left_cm, latest.calf_right_cm, 'Calves', 'calves'),
+        ]
+        symmetry = [s for s in symmetry if s is not None]
+
+        return Response({
+            'has_data': True,
+            'total_logs': total_logs,
+            'kpis': {
+                'waist_change': {
+                    'baseline_cm': float(waist_baseline) if waist_baseline else None,
+                    'current_cm': float(waist_latest) if waist_latest else None,
+                    'diff_cm': waist_diff,
+                    'diff_pct': waist_diff_pct,
+                    'sparkline': waist_sparkline,
+                },
+                'shoulder_to_waist': {
+                    'ratio': shoulder_to_waist,
+                    'target': shoulder_target,
+                    'progress_pct': shoulder_progress_pct,
+                },
+                'chest_to_waist': {
+                    'ratio': chest_to_waist,
+                    'target': chest_target,
+                    'progress_pct': chest_progress_pct,
+                },
+                'measurements_logged': {
+                    'total': total_logs,
+                    'recent_pill': '↑ +2 vs last month',
+                },
+            },
+            'overview': overview,
+            'symmetry': symmetry,
+            'baseline_date': baseline.date.isoformat(),
+            'latest_date': latest.date.isoformat(),
+            'dates': [m.date.isoformat() for m in measurements],
+        })
+
+    @action(detail=False, methods=['get'], url_path='compare')
+    def compare(self, request):
+        """
+        Compares body measurements between two dates on the backend.
+        """
+        user = request.user
+        client_id = request.query_params.get('client_id')
+        if client_id and client_id != str(user.id):
+            if can_view_progress(user, client_id, 'share_body_measurements'):
+                target_user_id = client_id
+            else:
+                return Response({'detail': 'Not authorized to view measurements.'}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            target_user_id = user.id
+
+        date_a_str = request.query_params.get('date_a')
+        date_b_str = request.query_params.get('date_b')
+
+        measurements = list(BodyMeasurement.objects.filter(user_id=target_user_id).order_by('date'))
+        if not measurements:
+            return Response({'rows': []})
+
+        date_map = {m.date.isoformat(): m for m in measurements}
+        m_a = date_map.get(date_a_str) or measurements[0]
+        m_b = date_map.get(date_b_str) or measurements[-1]
+
+        sites = [
+            ('shoulders_cm', 'Shoulders', 'hypertrophy'),
+            ('chest_cm', 'Chest', 'hypertrophy'),
+            ('waist_cm', 'Waist', 'reduction'),
+            ('hips_cm', 'Hips', 'reduction'),
+            ('arms_cm', 'Arms / Biceps', 'hypertrophy'),
+            ('thighs_cm', 'Thighs', 'hypertrophy'),
+            ('calves_cm', 'Calves', 'hypertrophy'),
+            ('neck_cm', 'Neck', 'neutral'),
+        ]
+
+        rows = []
+        for field, label, target_type in sites:
+            val_a = getattr(m_a, field, None)
+            val_b = getattr(m_b, field, None)
+            val_a_f = float(val_a) if val_a is not None else None
+            val_b_f = float(val_b) if val_b is not None else None
+            diff_f = round(val_b_f - val_a_f, 1) if (val_b_f is not None and val_a_f is not None) else None
+            diff_pct_f = round((diff_f / val_a_f) * 100, 1) if (diff_f is not None and val_a_f) else None
+
+            rows.append({
+                'key': field,
+                'site': label,
+                'target_type': target_type,
+                'val_a_cm': val_a_f,
+                'val_b_cm': val_b_f,
+                'diff_cm': diff_f,
+                'diff_pct': diff_pct_f,
+            })
+
+        return Response({
+            'date_a': m_a.date.isoformat(),
+            'date_b': m_b.date.isoformat(),
+            'rows': rows,
+        })
+
 class PersonalRecordViewSet(viewsets.ModelViewSet):
     serializer_class = PersonalRecordSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -202,3 +408,26 @@ class ProgressPhotoViewSet(viewsets.ModelViewSet):
             for date_str, photos in sorted(grouped.items(), reverse=True)
         ]
         return Response(result)
+
+
+class PersonalRecordTrendView(APIView):
+    """Returns a per-exercise estimated-1RM progression over time, derived from logged
+    sets (PersonalRecord only stores the current best, not its history). Used to power
+    a "strength growth" line chart on mobile/web and in the data export PDF."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .records import compute_pr_trend
+
+        exercise_id = request.query_params.get('exercise_id')
+        if not exercise_id:
+            return Response({'detail': 'exercise_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        client_id = request.query_params.get('client_id')
+        user = request.user
+        if client_id and client_id != str(user.id):
+            if not can_view_progress(user, client_id, 'share_progress_with_trainers'):
+                return Response({'exercise_id': exercise_id, 'trend': []})
+            user = type(user).objects.get(id=client_id)
+
+        return Response({'exercise_id': exercise_id, 'trend': compute_pr_trend(user, exercise_id)})

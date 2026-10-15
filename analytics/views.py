@@ -466,8 +466,11 @@ class DashboardStatsView(APIView):
         if active_days_count == 0:
             streak = 0
 
+        account_age_days = (today - user.date_joined.date()).days
+
         return Response({
             'streak_days': streak,
+            'account_age_days': account_age_days,
             'workouts_this_week': workouts_this_week,
             'workouts_this_month': workouts_this_month,
             'weekly_workouts_target': weekly_workouts_target,

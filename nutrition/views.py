@@ -80,12 +80,111 @@ class NutritionDayView(APIView):
             mode, 'Cut Mode' if mode == 'CUT' else ('Bulk Mode' if mode == 'BULK' else mode.capitalize())
         )
 
+        # Backend calculations for macro summary & breakdown
+        consumed_calories = day.total_calories()
+        consumed_protein = day.total_protein()
+        consumed_carbs = day.total_carbs()
+        consumed_fat = day.total_fat()
+        consumed_water = day.water_consumed_ml
+
+        target_calories = target.daily_calories
+        target_protein = target.protein_g
+        target_carbs = target.carbs_g
+        target_fat = target.fat_g
+        target_water = target.water_ml
+
+        cal_pct = round((consumed_calories / max(1, target_calories)) * 100) if target_calories else 0
+        pro_pct = round((consumed_protein / max(1, target_protein)) * 100) if target_protein else 0
+        carbs_pct = round((consumed_carbs / max(1, target_carbs)) * 100) if target_carbs else 0
+        fat_pct = round((consumed_fat / max(1, target_fat)) * 100) if target_fat else 0
+        water_pct = round((consumed_water / max(1, target_water)) * 100) if target_water else 0
+
+        pro_kcal = round(consumed_protein * 4)
+        carbs_kcal = round(consumed_carbs * 4)
+        fat_kcal = round(consumed_fat * 9)
+        total_macro_kcal = max(1, pro_kcal + carbs_kcal + fat_kcal)
+
+        pro_dist_pct = round((pro_kcal / total_macro_kcal) * 100)
+        carbs_dist_pct = round((carbs_kcal / total_macro_kcal) * 100)
+        fat_dist_pct = max(0, 100 - pro_dist_pct - carbs_dist_pct)
+
+        # Reassuring non-punitive indicator:
+        calorie_budget_intact = consumed_calories <= target_calories
+        rec_targets = calculate_recommended_targets(request.user, target_date)
+
+        macro_summary = {
+            'calories': {
+                'consumed': consumed_calories,
+                'target': target_calories,
+                'remaining': max(0, target_calories - consumed_calories),
+                'excess': max(0, consumed_calories - target_calories),
+                'percentage': cal_pct,
+                'is_exceeded': consumed_calories > target_calories,
+            },
+            'protein': {
+                'consumed': consumed_protein,
+                'target': target_protein,
+                'remaining': max(0.0, round(target_protein - consumed_protein, 1)),
+                'excess': max(0.0, round(consumed_protein - target_protein, 1)),
+                'percentage': pro_pct,
+                'is_exceeded': consumed_protein > target_protein,
+                'calories': pro_kcal,
+                'pct_of_calories': pro_dist_pct,
+            },
+            'carbs': {
+                'consumed': consumed_carbs,
+                'target': target_carbs,
+                'remaining': max(0.0, round(target_carbs - consumed_carbs, 1)),
+                'excess': max(0.0, round(consumed_carbs - target_carbs, 1)),
+                'percentage': carbs_pct,
+                'is_exceeded': consumed_carbs > target_carbs,
+                'calories': carbs_kcal,
+                'pct_of_calories': carbs_dist_pct,
+            },
+            'fat': {
+                'consumed': consumed_fat,
+                'target': target_fat,
+                'remaining': max(0.0, round(target_fat - consumed_fat, 1)),
+                'excess': max(0.0, round(consumed_fat - target_fat, 1)),
+                'percentage': fat_pct,
+                'is_exceeded': consumed_fat > target_fat,
+                'calories': fat_kcal,
+                'pct_of_calories': fat_dist_pct,
+            },
+            'hydration': {
+                'consumed_ml': consumed_water,
+                'target_ml': target_water,
+                'consumed_l': round(consumed_water / 1000.0, 2),
+                'target_l': round(target_water / 1000.0, 2),
+                'remaining_ml': max(0, target_water - consumed_water),
+                'remaining_l': round(max(0, target_water - consumed_water) / 1000.0, 2),
+                'percentage': water_pct,
+            },
+            'calorie_budget_intact': calorie_budget_intact,
+        }
+
+        macro_breakdown = {
+            'total_calories': consumed_calories or total_macro_kcal,
+            'protein_g': consumed_protein,
+            'protein_pct': pro_dist_pct,
+            'protein_kcal': pro_kcal,
+            'carbs_g': consumed_carbs,
+            'carbs_pct': carbs_dist_pct,
+            'carbs_kcal': carbs_kcal,
+            'fat_g': consumed_fat,
+            'fat_pct': fat_dist_pct,
+            'fat_kcal': fat_kcal,
+        }
+
         return Response({
             'day': NutritionDaySerializer(day).data,
             'targets': {
                 **MacroTargetSerializer(target).data,
                 'exercise_calories': exercise_calories_today(request.user, target_date),
             },
+            'macro_summary': macro_summary,
+            'macro_breakdown': macro_breakdown,
+            'target_derivation': rec_targets,
             'yesterday_meals': yesterday_meals,
             'plan': {
                 'mode': mode,
@@ -397,10 +496,15 @@ class NutritionHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        try:
-            days = int(request.query_params.get('days', 30))
-        except (ValueError, TypeError):
-            days = 30
+        range_param = request.query_params.get('range')
+        range_map = {'7D': 7, '30D': 30, '90D': 90}
+        if range_param in range_map:
+            days = range_map[range_param]
+        else:
+            try:
+                days = int(request.query_params.get('days', 30))
+            except (ValueError, TypeError):
+                days = 30
         days = min(max(1, days), 90)
 
         today = timezone.localdate()
@@ -498,9 +602,37 @@ class NutritionHistoryView(APIView):
         # Calculate weekly nutrition summaries (Monday-Sunday weeks)
         weeks = build_weekly_nutrition_summaries(history_list, today, mode, target_type, timeline)
 
+        # Precalculate period analytics in backend
+        logged_items = [h for h in history_list if h['has_logged']]
+        logged_count = len(logged_items)
+        avg_cal = round(sum(h['total_calories'] for h in logged_items) / logged_count) if logged_count else 0
+        avg_pro = round(sum(h['total_protein'] for h in logged_items) / logged_count, 1) if logged_count else 0.0
+        avg_carbs = round(sum(h['total_carbs'] for h in logged_items) / logged_count, 1) if logged_count else 0.0
+        avg_fat = round(sum(h['total_fat'] for h in logged_items) / logged_count, 1) if logged_count else 0.0
+        avg_water = round(sum(h['water_consumed_ml'] for h in logged_items) / logged_count) if logged_count else 0
+
+        latest_target = timeline.current
+        period_analytics = {
+            'range': f"{days}D",
+            'total_days': days,
+            'logged_days_count': logged_count,
+            'avg_calories': avg_cal,
+            'avg_protein': avg_pro,
+            'avg_carbs': avg_carbs,
+            'avg_fat': avg_fat,
+            'avg_water_ml': avg_water,
+            'target_calories': latest_target.daily_calories,
+            'target_protein': latest_target.protein_g,
+            'target_carbs': latest_target.carbs_g,
+            'target_fat': latest_target.fat_g,
+            'target_water_ml': latest_target.water_ml,
+            'calorie_adherence_pct': round((avg_cal / max(1, latest_target.daily_calories)) * 100) if logged_count else 0,
+        }
+
         return Response({
             'history': history_list,
             'weeks': weeks,
+            'analytics': period_analytics,
             'targets': MacroTargetSerializer(timeline.current).data,
             'program': {
                 'start_date': program.start_date.isoformat() if program and program.start_date else None,

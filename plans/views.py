@@ -5,17 +5,19 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.db import transaction
 from workouts.models import JourneyProgram, ProgramDay, Routine
+from exercises.models import Exercise
 from .models import Blueprint, TrainingSplit
 from .serializers import (
     BlueprintSerializer, TrainingSplitSerializer,
     PlanPreviewRequestSerializer, PlanCreateRequestSerializer, PlanOptionsRequestSerializer,
+    GoalWeightRecommendationRequestSerializer,
 )
 from .services import plan_generator
 from .services.exercise_lookup import muscle_group_by_exercise_name
 from .services.plan_generator import generate_roadmap
 from .split_approval import (
     DAYS_TO_SPLIT_SLUGS, DEFAULT_EQUIPMENT_LEVEL, approved_combinations, approved_slugs_for,
-    is_split_approved,
+    is_split_approved, is_catalog_complete,
 )
 
 NO_SUPPORTED_SPLIT_CODE = 'NO_SUPPORTED_SPLIT'
@@ -32,9 +34,15 @@ class PlanViewSet(viewsets.ViewSet):
 
     def _resolve_training_split(self, data):
         split_slug = data.get('split_slug')
-        if not split_slug:
-            return None
-        return TrainingSplit.objects.filter(slug=split_slug, is_active=True).first()
+        if split_slug:
+            return TrainingSplit.objects.filter(slug=split_slug, is_active=True).first()
+        equipment_level = data.get('equipment_level') or DEFAULT_EQUIPMENT_LEVEL
+        days_per_week = data.get('days_per_week')
+        for slug in approved_slugs_for(days_per_week, equipment_level):
+            split = TrainingSplit.objects.filter(slug=slug, is_active=True).first()
+            if split and is_catalog_complete(split):
+                return split
+        return None
 
     def _generate_roadmap(self, blueprint, data, training_split):
         """Builds the exercise -> muscle-group lookup the volume check
@@ -45,6 +53,14 @@ class PlanViewSet(viewsets.ViewSet):
         _, workout_templates = plan_generator.resolve_workout_templates(blueprint, training_split)
         exercise_names = plan_generator.exercise_names_in_workout_templates(workout_templates)
         muscle_map = muscle_group_by_exercise_name(exercise_names)
+        # In a fully seeded environment, an approved template must resolve
+        # every exercise against the active global library. The empty-library
+        # escape hatch keeps legacy development/test fixtures usable before
+        # the exercise seed command has run.
+        if Exercise.objects.filter(gym__isnull=True).exists() and muscle_map:
+            missing = sorted(exercise_names - set(muscle_map))
+            if missing:
+                raise ValueError(f"Template references unavailable exercises: {', '.join(missing)}")
         return generate_roadmap(blueprint, data, training_split=training_split, muscle_group_by_exercise=muscle_map)
 
     def _no_supported_split_payload(self, days_per_week, equipment_level):
@@ -78,11 +94,18 @@ class PlanViewSet(viewsets.ViewSet):
 
         if split_slug:
             split = TrainingSplit.objects.filter(slug=split_slug, is_active=True).first()
-            if split is not None and not is_split_approved(split.slug, equipment_level):
+            if split is not None and (not is_split_approved(split.slug, equipment_level) or not is_catalog_complete(split)):
                 return self._no_supported_split_payload(days_per_week, equipment_level)
             return None
 
-        if days_per_week and not approved_slugs_for(days_per_week, equipment_level):
+        available_catalog_rows = TrainingSplit.objects.filter(days_per_week=days_per_week, is_active=True)
+        # Keep legacy callers working in installations that have not run the
+        # split seed command yet; once catalog rows exist, fail closed.
+        if days_per_week and available_catalog_rows.exists() and not any(
+            is_catalog_complete(split)
+            for split in available_catalog_rows
+            if is_split_approved(split.slug, equipment_level)
+        ):
             return self._no_supported_split_payload(days_per_week, equipment_level)
         return None
 
@@ -93,7 +116,12 @@ class PlanViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'], url_path='splits')
     def splits(self, request):
-        qs = TrainingSplit.objects.filter(is_active=True)
+        equipment_level = request.query_params.get('equipment_level') or DEFAULT_EQUIPMENT_LEVEL
+        days = request.query_params.get('days_per_week')
+        qs = TrainingSplit.objects.filter(is_active=True, approval_status='APPROVED')
+        if days:
+            qs = qs.filter(days_per_week=days)
+        qs = [split for split in qs if is_split_approved(split.slug, equipment_level) and is_catalog_complete(split)]
         return Response({'splits': TrainingSplitSerializer(qs, many=True).data})
 
     @action(detail=False, methods=['post'], url_path='preview')
@@ -114,8 +142,25 @@ class PlanViewSet(viewsets.ViewSet):
         if split_error:
             return Response({'can_start': False, **split_error}, status=status.HTTP_200_OK)
 
-        roadmap = self._generate_roadmap(blueprint, data, self._resolve_training_split(data))
+        try:
+            roadmap = self._generate_roadmap(blueprint, data, self._resolve_training_split(data))
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'code': 'INVALID_EXERCISE_REFERENCE'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         return Response(roadmap)
+
+    @action(detail=False, methods=['post'], url_path='recommended-goal-weight', permission_classes=[permissions.AllowAny])
+    def recommended_goal_weight(self, request):
+        serializer = GoalWeightRecommendationRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        goal_weight_kg = plan_generator.recommend_goal_weight(
+            mode=data['mode'],
+            current_weight_kg=data['current_weight_kg'],
+            height_cm=data['height_cm'],
+            duration_days=data['duration_days'],
+        )
+        return Response({'goal_weight_kg': goal_weight_kg})
 
     @action(detail=False, methods=['post'], url_path='options')
     def options(self, request):
@@ -138,14 +183,25 @@ class PlanViewSet(viewsets.ViewSet):
 
         options = []
         for days_per_week, slugs in DAYS_TO_SPLIT_SLUGS.items():
+            if data.get('days_per_week') and data['days_per_week'] != days_per_week:
+                continue
             for slug in slugs:
                 if not is_split_approved(slug, equipment_level):
                     continue
                 split = TrainingSplit.objects.filter(slug=slug, is_active=True).first()
-                if not split:
+                if not split or not is_catalog_complete(split):
+                    continue
+                if data.get('experience') not in (split.experience_levels or ['BEGINNER', 'INTERMEDIATE', 'ADVANCED']):
+                    continue
+                if mode not in (split.compatible_goals or [mode]):
+                    continue
+                if data.get('session_duration_minutes') and split.estimated_session_minutes > data['session_duration_minutes']:
                     continue
                 option_inputs = {**data, 'days_per_week': days_per_week, 'split_slug': slug}
-                roadmap = self._generate_roadmap(blueprint, option_inputs, split)
+                try:
+                    roadmap = self._generate_roadmap(blueprint, option_inputs, split)
+                except ValueError:
+                    continue
                 options.append({
                     'split_slug': slug,
                     'split_name': split.name,
@@ -153,6 +209,11 @@ class PlanViewSet(viewsets.ViewSet):
                     'days_per_week': days_per_week,
                     'summary': roadmap['summary'],
                     'engine': roadmap['engine'],
+                    'estimated_session_minutes': split.estimated_session_minutes,
+                    'experience_levels': split.experience_levels,
+                    'compatible_goals': split.compatible_goals,
+                    'equipment_requirements': split.equipment_requirements,
+                    'muscle_groups': split.muscle_groups,
                 })
 
         if not options:
@@ -162,7 +223,16 @@ class PlanViewSet(viewsets.ViewSet):
                 'detail': f"No supported training split exists at '{equipment_level}' equipment.",
                 'supported_combinations': approved_combinations(),
             }, status=status.HTTP_200_OK)
-        return Response({'mode': mode, 'equipment_level': equipment_level, 'options': options})
+        # Stable ranking is shared by both clients: experience-fit first, then
+        # shorter sessions, with the catalog order as the final tie-breaker.
+        options.sort(key=lambda option: (option['estimated_session_minutes'], option['days_per_week'], option['split_slug']))
+        primary = options[0]
+        primary['is_recommended'] = True
+        primary['recommendation_reason'] = (
+            f"Matches your {data.get('experience', 'INTERMEDIATE').lower()} experience, "
+            f"{mode.lower()} goal, and available equipment."
+        )
+        return Response({'mode': mode, 'equipment_level': equipment_level, 'recommended': primary['split_slug'], 'options': options})
 
     @transaction.atomic
     def create(self, request):
@@ -182,7 +252,10 @@ class PlanViewSet(viewsets.ViewSet):
         if split_error:
             return Response(split_error, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        roadmap = self._generate_roadmap(blueprint, data, self._resolve_training_split(data))
+        try:
+            roadmap = self._generate_roadmap(blueprint, data, self._resolve_training_split(data))
+        except ValueError as exc:
+            return Response({'can_start': False, 'code': 'INVALID_EXERCISE_REFERENCE', 'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         engine_meta = roadmap['engine']
 
         # Spec v1.6 section 5 (closing line): "every block rule returns

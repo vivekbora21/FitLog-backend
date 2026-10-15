@@ -20,6 +20,21 @@ class TrainingSplit(UUIDTimeStampedModel):
     description = models.TextField(blank=True, default='')
     days_per_week = models.PositiveSmallIntegerField()
     workout_templates = models.JSONField(default=dict)
+    experience_levels = models.JSONField(default=list, blank=True)
+    compatible_goals = models.JSONField(default=list, blank=True)
+    rest_days = models.JSONField(default=list, blank=True)
+    muscle_groups = models.JSONField(default=list, blank=True)
+    equipment_requirements = models.JSONField(default=list, blank=True)
+    estimated_session_minutes = models.PositiveSmallIntegerField(default=60)
+    weekly_volume = models.JSONField(default=dict, blank=True)
+    progression_strategy = models.TextField(blank=True, default='')
+    recovery_rules = models.JSONField(default=list, blank=True)
+    approval_status = models.CharField(
+        max_length=20,
+        choices=[('DRAFT', 'Draft'), ('APPROVED', 'Approved'), ('INACTIVE', 'Inactive')],
+        default='DRAFT',
+    )
+    catalog_version = models.CharField(max_length=20, default='1.0')
     is_active = models.BooleanField(default=True)
     display_order = models.PositiveSmallIntegerField(default=0)
 

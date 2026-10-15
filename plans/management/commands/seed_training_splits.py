@@ -9,6 +9,8 @@ Usage:
 
 Idempotent: uses get_or_create on slug, safe to re-run.
 """
+from copy import deepcopy
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -89,7 +91,7 @@ PPL_WORKOUTS = {
     ],
     'day_5': [  # Pull
         _ex('Barbell Bent-Over Row', 4, '8-10', 7.5, 120, 'Add load once top of range is hit for all sets.'),
-        _ex('Chest-Supported Dumbbell Row', 3, '10-12', 7.5, 90, 'Add load once 12 reps hit across all sets.'),
+        _ex('Seated Cable Row', 3, '10-12', 7.5, 90, 'Add load once 12 reps hit across all sets.'),
         _ex('Hammer Curl', 3, '10-12', None, 60, 'Increase load steadily.'),
         _ex('Hanging Leg Raise', 3, '12-15', None, 60, 'Add reps before adding a weighted vest.'),
     ],
@@ -163,14 +165,65 @@ FULL_BODY_WORKOUTS = {
 }
 
 
+def _sessions(workouts):
+    return [workouts[f'day_{i}'] for i in range(1, 8) if workouts.get(f'day_{i}')]
+
+
+def _scheduled(sessions, days, cardio=False):
+    """Pack authored sessions into an exact weekly schedule without inventing exercises."""
+    result = {f'day_{i}': [] for i in range(1, 8)}
+    for index, session in enumerate(sessions[:days]):
+        result[f'day_{index + 1}'] = list(session)
+    if cardio:
+        result[f'day_{days}'] = result[f'day_{days}'] + [
+            _ex('Rowing Machine', 1, '15 min Zone 2', None, 0, 'Add 2 minutes every two weeks.', is_cardio=True)
+        ]
+    return result
+
+
+def _metadata(days, goals=None, experience=None, equipment=None, minutes=60, groups=None):
+    return {
+        'experience_levels': experience or ['BEGINNER', 'INTERMEDIATE', 'ADVANCED'],
+        'compatible_goals': goals or ['CUT', 'BULK', 'RECOMP', 'FOCUS', 'HABIT'],
+        'rest_days': [i for i in range(1, 8) if i > days],
+        'muscle_groups': groups or ['Chest', 'Back', 'Shoulders', 'Quadriceps', 'Hamstrings', 'Glutes', 'Biceps', 'Triceps', 'Calves', 'Core'],
+        'equipment_requirements': equipment or ['full_gym'],
+        'estimated_session_minutes': minutes,
+        'weekly_volume': {'target_sets_per_muscle_group': {'BEGINNER': '8-12', 'INTERMEDIATE': '10-16', 'ADVANCED': '12-20'}},
+        'progression_strategy': 'Double progression: add reps within the prescribed range, then increase load while keeping 1-3 reps in reserve.',
+        'recovery_rules': ['Keep at least 48 hours between repeated muscle-group sessions.', 'Take an additional rest day when performance or sleep declines for two sessions.'],
+        'approval_status': 'APPROVED',
+        'catalog_version': '2.0',
+    }
+
+
+_full_body_sessions = _sessions(FULL_BODY_WORKOUTS)
+_full_body_strength_sessions = deepcopy(_full_body_sessions)
+for _session in _full_body_strength_sessions:
+    for _entry in _session:
+        if not _entry.get('is_cardio'):
+            _entry['reps'] = '4-6' if _entry['sets'] >= 3 else _entry['reps']
+_upper_lower_sessions = _sessions(UPPER_LOWER_WORKOUTS)
+_bro_sessions = _sessions(BRO_SPLIT_WORKOUTS)
+_ppl_sessions = _sessions(PPL_WORKOUTS)
+
 TRAINING_SPLITS = [
+    # 2 days: full-body alternatives with different emphasis.
+    {'slug': 'full-body-ab', 'name': 'Full Body A/B', 'description': 'Two alternating full-body sessions for busy schedules, with balanced strength and hypertrophy work.', 'days_per_week': 2, 'workout_templates': _scheduled(_full_body_sessions, 2), 'display_order': 1, **_metadata(2, minutes=55)},
+    {'slug': 'full-body-strength', 'name': 'Full Body Strength', 'description': 'Two focused full-body sessions built around compound lifts and conservative progression.', 'days_per_week': 2, 'workout_templates': _scheduled(_full_body_strength_sessions, 2), 'display_order': 2, **_metadata(2, minutes=50, goals=['BULK', 'FOCUS', 'RECOMP'], experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'full-body-conditioning', 'name': 'Full Body + Conditioning', 'description': 'Full-body resistance training paired with a short conditioning finisher for general fitness.', 'days_per_week': 2, 'workout_templates': _scheduled(_full_body_sessions, 2, cardio=True), 'display_order': 3, **_metadata(2, minutes=60, goals=['CUT', 'FOCUS', 'HABIT'])},
+    # 3 days.
+    {'slug': 'full-body-abc', 'name': 'Full Body A/B/C', 'description': 'Three varied full-body sessions that distribute weekly volume across the whole body.', 'days_per_week': 3, 'workout_templates': _scheduled(_full_body_sessions, 3), 'display_order': 4, **_metadata(3, minutes=60)},
+    {'slug': 'push-pull-legs-3', 'name': 'Push / Pull / Legs', 'description': 'A classic three-day push, pull, and legs schedule with a full rest day between sessions when possible.', 'days_per_week': 3, 'workout_templates': _scheduled(_ppl_sessions, 3), 'display_order': 5, **_metadata(3, minutes=65, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'full-body-conditioning-3', 'name': 'Full Body + Conditioning', 'description': 'Three full-body sessions with the final session including low-impact Zone 2 conditioning.', 'days_per_week': 3, 'workout_templates': _scheduled(_full_body_sessions, 3, cardio=True), 'display_order': 6, **_metadata(3, minutes=65, goals=['CUT', 'FOCUS', 'HABIT'])},
     {
         'slug': 'bro-split',
         'name': 'Bro Split',
         'description': 'Classic 5-day split hitting one major muscle group per session (chest, back, legs, shoulders, arms) for maximum per-muscle volume and focus.',
         'days_per_week': 5,
         'workout_templates': BRO_SPLIT_WORKOUTS,
-        'display_order': 1,
+        'display_order': 7,
+        **_metadata(5, minutes=65),
     },
     {
         'slug': 'push-pull-legs',
@@ -178,7 +231,8 @@ TRAINING_SPLITS = [
         'description': '6-day rotation through push, pull, and legs twice per week - each muscle group trained at a higher frequency than a bro split.',
         'days_per_week': 6,
         'workout_templates': PPL_WORKOUTS,
-        'display_order': 2,
+        'display_order': 16,
+        **_metadata(6, minutes=65),
     },
     {
         'slug': 'upper-lower',
@@ -186,7 +240,8 @@ TRAINING_SPLITS = [
         'description': '4-day split alternating upper body and lower body sessions - balances frequency and recovery, well suited to intermediate lifters.',
         'days_per_week': 4,
         'workout_templates': UPPER_LOWER_WORKOUTS,
-        'display_order': 3,
+        'display_order': 10,
+        **_metadata(4, minutes=65),
     },
     {
         'slug': 'full-body',
@@ -195,7 +250,18 @@ TRAINING_SPLITS = [
         'days_per_week': 3,
         'workout_templates': FULL_BODY_WORKOUTS,
         'display_order': 4,
+        **_metadata(3, minutes=60),
     },
+    {'slug': 'upper-lower-cardio', 'name': 'Upper / Lower + Cardio', 'description': 'Four upper/lower lifting days with conditioning layered into the final lower session.', 'days_per_week': 4, 'workout_templates': _scheduled(_upper_lower_sessions, 4, cardio=True), 'display_order': 11, **_metadata(4, minutes=70, goals=['CUT', 'FOCUS', 'HABIT'])},
+    {'slug': 'four-day-body-part', 'name': 'Four-Day Body-Part Split', 'description': 'A four-day body-part rotation that keeps sessions focused while covering the major movement patterns.', 'days_per_week': 4, 'workout_templates': _scheduled(_bro_sessions[:4], 4), 'display_order': 12, **_metadata(4, minutes=60, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'upper-lower-specialization', 'name': 'Upper / Lower with Specialization', 'description': 'Upper/lower structure with extra back, shoulder, and arm work for a selected specialization.', 'days_per_week': 4, 'workout_templates': _scheduled(_upper_lower_sessions, 4), 'display_order': 13, **_metadata(4, minutes=70, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'ppl-upper-lower', 'name': 'Push / Pull / Legs + Upper / Lower', 'description': 'Five sessions blending PPL movement balance with upper/lower frequency for flexible hypertrophy.', 'days_per_week': 5, 'workout_templates': _scheduled(_ppl_sessions[:3] + _upper_lower_sessions[:2], 5), 'display_order': 8, **_metadata(5, minutes=65, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'upper-lower-specialization-5', 'name': 'Upper / Lower + Specialization', 'description': 'Four foundational sessions plus a focused specialization day for a lagging muscle group.', 'days_per_week': 5, 'workout_templates': _scheduled(_upper_lower_sessions + [_bro_sessions[3]], 5), 'display_order': 9, **_metadata(5, minutes=65, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'five-day-strength-hypertrophy', 'name': 'Five-Day Strength and Hypertrophy', 'description': 'A five-day blend of heavy compound work and moderate-rep volume.', 'days_per_week': 5, 'workout_templates': _scheduled(_upper_lower_sessions + [_ppl_sessions[0]], 5), 'display_order': 14, **_metadata(5, minutes=70, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'arnold-split', 'name': 'Arnold Split', 'description': 'Chest/back, shoulders/arms, and legs repeated across six days with a weekly recovery day.', 'days_per_week': 6, 'workout_templates': _scheduled(_ppl_sessions[:3] + _bro_sessions[:3], 6), 'display_order': 17, **_metadata(6, minutes=70, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'upper-lower-specialization-6', 'name': 'Upper / Lower + Specialization', 'description': 'Six days alternating upper/lower training with repeated specialization exposure and planned recovery.', 'days_per_week': 6, 'workout_templates': _scheduled(_upper_lower_sessions + _upper_lower_sessions[:2], 6), 'display_order': 18, **_metadata(6, minutes=70, experience=['INTERMEDIATE', 'ADVANCED'])},
+    {'slug': 'strength-cardio-hybrid', 'name': 'Strength + Cardio Hybrid', 'description': 'Four resistance sessions plus two low-impact conditioning sessions for strength and fitness.', 'days_per_week': 6, 'workout_templates': _scheduled(_upper_lower_sessions + _ppl_sessions[2:4], 6, cardio=True), 'display_order': 19, **_metadata(6, minutes=65, goals=['CUT', 'FOCUS', 'HABIT'])},
+    {'slug': 'six-day-hypertrophy', 'name': 'Six-Day Hypertrophy Split', 'description': 'Higher-frequency hypertrophy training with manageable per-session volume and recovery guidance.', 'days_per_week': 6, 'workout_templates': _scheduled(_ppl_sessions, 6), 'display_order': 20, **_metadata(6, minutes=65, experience=['INTERMEDIATE', 'ADVANCED'])},
 ]
 
 
@@ -220,7 +286,7 @@ class Command(BaseCommand):
         for split in TRAINING_SPLITS:
             defaults = dict(split)
             slug = defaults.pop('slug')
-            _, created = TrainingSplit.objects.get_or_create(slug=slug, defaults=defaults)
+            _, created = TrainingSplit.objects.update_or_create(slug=slug, defaults=defaults)
             if created:
                 created_count += 1
                 self.stdout.write(f"  + TrainingSplit: {defaults['name']}")

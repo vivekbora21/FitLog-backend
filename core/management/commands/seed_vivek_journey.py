@@ -366,6 +366,7 @@ class Command(BaseCommand):
                             if not made and est_1rm > pr.estimated_one_rep_max:
                                 pr.max_weight_kg, pr.reps, pr.estimated_one_rep_max, pr.achieved_at = weight, reps, est_1rm, day_date
                                 pr.save()
+                ProgramDay.objects.filter(completed_session=session).exclude(program=program, day_number=day_number).update(completed_session=None)
                 ProgramDay.objects.filter(program=program, day_number=day_number).update(status='COMPLETED', completed_session=session)
                 return session
 
