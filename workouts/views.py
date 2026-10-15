@@ -28,6 +28,7 @@ from analytics.pacing import (
     calculate_journey_pacing,
     DEFAULT_WEEKLY_RATES,
 )
+from .plan_state import reconcile_plan, build_plan_state
 
 class WorkoutSessionViewSet(viewsets.ModelViewSet):
     serializer_class = WorkoutSessionSerializer
@@ -135,15 +136,48 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         program = JourneyProgram.objects.filter(user=request.user, active=True).first()
         if not program:
             return Response({'program': None, 'today': None})
-        requested_date = request.query_params.get('date')
-        day_number = program.current_day
-        if requested_date:
+        plan_state = reconcile_plan(program)
+        requested_date_str = request.query_params.get('date')
+        if requested_date_str:
             try:
-                requested = date.fromisoformat(requested_date)
+                target_date = date.fromisoformat(requested_date_str)
             except ValueError:
                 return Response({'detail': 'Invalid date format (use YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
-            day_number = (requested - program.start_date).days + 1
-        day = program.days.filter(day_number=day_number).select_related('program', 'routine', 'completed_session').prefetch_related('routine__exercises__exercise').first()
+        else:
+            target_date = timezone.localdate()
+
+        # 1. Did the user complete a workout session on target_date?
+        session_on_date = WorkoutSession.objects.filter(
+            user=request.user, started_at__date=target_date
+        ).order_by('-started_at').first()
+
+        day = None
+        if session_on_date:
+            day = program.days.filter(completed_session=session_on_date).first()
+
+        # 2. If no linked session, check if any program day was scheduled or self-reported completed on target_date
+        if not day:
+            if requested_date_str:
+                day = program.days.filter(scheduled_date=target_date).first()
+                if not day:
+                    day_number = (target_date - program.start_date).days + 1
+                    day = program.days.filter(day_number=day_number).first()
+            else:
+                # On today without a logged workout, show the current active day
+                day = program.days.filter(day_number=program.current_day).first()
+
+        if day:
+            day = program.days.filter(id=day.id).select_related(
+                'program', 'routine', 'completed_session'
+            ).prefetch_related(
+                'routine__exercises__exercise',
+                'routine__exercises__exercise__primary_muscle',
+                'completed_session__exercises',
+                'completed_session__exercises__exercise',
+                'completed_session__exercises__exercise__primary_muscle',
+                'completed_session__exercises__sets',
+            ).first()
+
         return Response({
             'program': {
                 'id': str(program.id),
@@ -151,9 +185,12 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'mode': program.mode,
                 'mode_label': dict(JourneyProgram.MODE_CHOICES).get(program.mode, program.mode),
                 'start_date': program.start_date.isoformat() if program.start_date else None,
+                'original_end_date': program.original_end_date.isoformat() if program.original_end_date else None,
+                'effective_end_date': program.effective_end_date.isoformat() if program.effective_end_date else None,
                 'current_day': program.current_day,
                 'duration_days': program.duration_days,
             },
+            'plan_state': plan_state,
             'today': ProgramDaySerializer(day, context={'request': request}).data if day else None
         })
 
@@ -199,9 +236,14 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         program = JourneyProgram.objects.filter(user=request.user, active=True).first()
         if not program:
             return Response({'program': None, 'days': []})
+        plan_state = reconcile_plan(program)
         days = program.days.select_related('routine', 'completed_session').prefetch_related(
             'routine__exercises__exercise',
-            'routine__exercises__exercise__primary_muscle'
+            'routine__exercises__exercise__primary_muscle',
+            'completed_session__exercises',
+            'completed_session__exercises__exercise',
+            'completed_session__exercises__exercise__primary_muscle',
+            'completed_session__exercises__sets',
         ).order_by('day_number')
         return Response({
             'program': {
@@ -210,6 +252,8 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'mode': program.mode,
                 'mode_label': dict(JourneyProgram.MODE_CHOICES).get(program.mode, program.mode),
                 'start_date': program.start_date,
+                'original_end_date': program.original_end_date,
+                'effective_end_date': program.effective_end_date,
                 'current_day': program.current_day,
                 'duration_days': program.duration_days,
                 'start_weight_kg': program.start_weight_kg,
@@ -218,8 +262,56 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'target_cardio_minutes_early': program.target_cardio_minutes_early,
                 'target_cardio_minutes_later': program.target_cardio_minutes_later,
             },
+            'plan_state': plan_state,
             'days': ProgramDaySerializer(days, many=True, context={'request': request}).data,
         })
+
+    @action(detail=False, methods=['post'], url_path='extend-plan')
+    @transaction.atomic
+    def extend_plan(self, request):
+        program = JourneyProgram.objects.select_for_update().filter(user=request.user, active=True).first()
+        if not program:
+            return Response({'error': 'No active plan.'}, status=status.HTTP_404_NOT_FOUND)
+        state = reconcile_plan(program)
+        missed = list(program.days.select_related('routine').filter(status='MISSED').order_by('scheduled_date', 'day_number'))
+        if program.extension_status != 'NONE' or program.plan_status != 'COMPLETED' or not missed:
+            return Response({'error': 'This plan is not eligible for extension.', 'plan_state': state}, status=status.HTTP_409_CONFLICT)
+
+        extension_days = len(missed)
+        last_day = program.days.order_by('-scheduled_date', '-day_number').first()
+        last_date = last_day.scheduled_date if last_day and last_day.scheduled_date else program.effective_end_date
+        next_day_number = max(program.duration_days, program.days.order_by('-day_number').first().day_number if program.days.exists() else 0) + 1
+        for missed_day in missed:
+            ProgramDay.objects.create(
+                program=program,
+                day_number=next_day_number,
+                scheduled_date=last_date + timedelta(days=1),
+                routine=missed_day.routine,
+                label=f'Make-up: {missed_day.label or missed_day.routine.name}',
+                is_optional=False,
+                status='UPCOMING',
+            )
+            last_date += timedelta(days=1)
+            next_day_number += 1
+        program.effective_end_date = last_date
+        program.extension_days += extension_days
+        program.extension_status = 'ACCEPTED'
+        program.plan_status = 'ACTIVE'
+        program.save(update_fields=['effective_end_date', 'extension_days', 'extension_status', 'plan_status', 'updated_at'])
+        return Response({'success': True, 'plan_state': reconcile_plan(program)})
+
+    @action(detail=False, methods=['post'], url_path='decline-plan-extension')
+    @transaction.atomic
+    def decline_plan_extension(self, request):
+        program = JourneyProgram.objects.select_for_update().filter(user=request.user, active=True).first()
+        if not program:
+            return Response({'error': 'No active plan.'}, status=status.HTTP_404_NOT_FOUND)
+        state = reconcile_plan(program)
+        if program.plan_status != 'COMPLETED' or program.extension_status != 'NONE':
+            return Response({'plan_state': state})
+        program.extension_status = 'DECLINED'
+        program.save(update_fields=['extension_status', 'updated_at'])
+        return Response({'success': True, 'plan_state': build_plan_state(program)})
 
     @action(detail=False, methods=['post'], url_path='update-program-day')
     def update_program_day(self, request):
@@ -237,10 +329,13 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         pd.status = new_status
         pd.save(update_fields=['status', 'updated_at'])
         if new_status in ('COMPLETED', 'MISSED', 'REST') and int(day_number) == program.current_day:
-            next_day = program.days.filter(day_number__gt=program.current_day, status='UPCOMING').order_by('day_number').first()
+            next_day = program.days.filter(day_number__gt=program.current_day).exclude(status='COMPLETED').order_by('day_number').first()
             if next_day:
                 program.current_day = next_day.day_number
                 program.save(update_fields=['current_day', 'updated_at'])
+        elif new_status == 'UPCOMING' and int(day_number) < program.current_day:
+            program.current_day = int(day_number)
+            program.save(update_fields=['current_day', 'updated_at'])
         return Response({'success': True, 'day_number': day_number, 'status': new_status, 'current_day': program.current_day})
 
     @action(detail=False, methods=['post'], url_path='swap-exercise')
@@ -294,7 +389,8 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='journey-history')
     def journey_history(self, request):
         programs = JourneyProgram.objects.filter(user=request.user).annotate(
-            completed_days=Count('days', filter=Q(days__status='COMPLETED'))
+            completed_days=Count('days', filter=Q(days__status='COMPLETED', days__completed_session__isnull=False)),
+            missed_days=Count('days', filter=Q(days__status='MISSED')),
         ).order_by('-start_date', '-created_at')
 
         journeys = [
@@ -307,6 +403,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'duration_days': p.duration_days,
                 'current_day': p.current_day,
                 'completed_days': p.completed_days,
+                'missed_days': p.missed_days,
                 'active': p.active,
                 'archived_at': p.archived_at.isoformat() if p.archived_at else None,
                 'start_weight_kg': p.start_weight_kg,
@@ -337,7 +434,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             entry = ProgramDaySerializer(d).data
             entry['completed_session'] = WorkoutSessionSerializer(d.completed_session).data if d.completed_session else None
             days_data.append(entry)
-            if d.status == 'COMPLETED':
+            if d.status == 'COMPLETED' and d.completed_session_id:
                 completed_days += 1
             elif d.status == 'MISSED':
                 missed_days += 1
@@ -717,6 +814,8 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             mode=mode,
             start_date=start_date,
             duration_days=duration_days,
+            original_end_date=start_date + timedelta(days=duration_days - 1),
+            effective_end_date=start_date + timedelta(days=duration_days - 1),
             current_day=1,
             active=True,
             start_weight_kg=start_weight_kg,
@@ -755,6 +854,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             program_days.append(ProgramDay(
                 program=new_program,
                 day_number=d,
+                scheduled_date=start_date + timedelta(days=d - 1),
                 routine=r,
                 label=label,
                 is_optional=is_optional or is_rest,

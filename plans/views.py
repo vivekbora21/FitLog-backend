@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -296,6 +296,8 @@ class PlanViewSet(viewsets.ViewSet):
             # plan_generator._resolve_anchor_date).
             start_date=roadmap['summary']['start_date'],
             duration_days=duration_days,
+            original_end_date=roadmap['summary']['start_date'] + timedelta(days=duration_days - 1),
+            effective_end_date=roadmap['summary']['start_date'] + timedelta(days=duration_days - 1),
             current_day=1,
             active=True,
             start_weight_kg=data['current_weight_kg'],
@@ -340,6 +342,7 @@ class PlanViewSet(viewsets.ViewSet):
             program_days.append(ProgramDay(
                 program=new_program,
                 day_number=day['day_number'],
+                scheduled_date=day['date'],
                 routine=placeholder_routine,
                 label=label,
                 is_optional=day['is_rest'],

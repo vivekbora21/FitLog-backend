@@ -79,8 +79,15 @@ class JourneyProgram(UUIDTimeStampedModel):
     mode = models.CharField(max_length=20, choices=MODE_CHOICES, default='CUT')
     start_date = models.DateField()
     duration_days = models.PositiveSmallIntegerField()
+    original_end_date = models.DateField(null=True, blank=True)
+    effective_end_date = models.DateField(null=True, blank=True)
     current_day = models.PositiveSmallIntegerField(default=1)
     active = models.BooleanField(default=True)
+    PLAN_STATUS_CHOICES = [('ACTIVE', 'Active'), ('COMPLETED', 'Completed')]
+    plan_status = models.CharField(max_length=12, choices=PLAN_STATUS_CHOICES, default='ACTIVE')
+    EXTENSION_STATUS_CHOICES = [('NONE', 'None'), ('DECLINED', 'Declined'), ('ACCEPTED', 'Accepted')]
+    extension_status = models.CharField(max_length=12, choices=EXTENSION_STATUS_CHOICES, default='NONE')
+    extension_days = models.PositiveSmallIntegerField(default=0)
     target_cardio_minutes_early = models.PositiveSmallIntegerField(default=120)
     target_cardio_minutes_later = models.PositiveSmallIntegerField(default=150)
 
@@ -146,6 +153,7 @@ class ProgramDay(UUIDTimeStampedModel):
     STATUS_CHOICES = [('UPCOMING', 'Upcoming'), ('COMPLETED', 'Completed'), ('MISSED', 'Missed'), ('REST', 'Rest Day')]
     program = models.ForeignKey(JourneyProgram, on_delete=models.CASCADE, related_name='days')
     day_number = models.PositiveSmallIntegerField()
+    scheduled_date = models.DateField(null=True, blank=True)
     routine = models.ForeignKey(Routine, on_delete=models.PROTECT, related_name='program_days')
     label = models.CharField(max_length=60, blank=True, default='')
     is_optional = models.BooleanField(default=False)

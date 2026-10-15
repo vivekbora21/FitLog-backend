@@ -12,6 +12,7 @@ from progress.models import PersonalRecord, WeightEntry, BodyMeasurement, DailyL
 from .pacing import calculate_journey_pacing, calculate_rolling_average
 from .weekly_health import build_weekly_health
 from .weekly_review import build_weekly_review
+from workouts.plan_state import reconcile_plan
 
 class DashboardStatsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -101,6 +102,7 @@ class DashboardStatsView(APIView):
         starting_waist = next((m.waist_cm for m in measurements if m.waist_cm is not None), None)
         cardio_minutes = sum(CardioEntry.objects.filter(user=user, date__gte=start_of_week, completed=True).values_list('duration_minutes', flat=True))
         program = JourneyProgram.objects.filter(user=user, active=True).first()
+        plan_state = reconcile_plan(program, today=today) if program else None
         target_cardio = weekly_cardio_target(target, program)
         calories_burned_week = sum(s.total_calories() or 0 for s in week_sessions)
         # Standalone cardio entries (not tied to a session) have their own calorie
@@ -344,6 +346,7 @@ class DashboardStatsView(APIView):
             volume_kg = 0.0
             exercises_count = 0
 
+            first_s = None
             if s_list:
                 c_status = 'COMPLETED'
                 first_s = s_list[0]
@@ -376,6 +379,7 @@ class DashboardStatsView(APIView):
                 'status': c_status,
                 'has_workout': len(s_list) > 0,
                 'sessions_count': len(s_list),
+                'session_id': str(first_s.id) if first_s else None,
                 'workout_title': workout_title,
                 'duration_min': duration_min,
                 'volume_kg': volume_kg,
@@ -519,6 +523,7 @@ class DashboardStatsView(APIView):
                 'program_day': program.current_day if program else None,
                 'program_length': program.duration_days if program else None,
                 'program_completion_percent': round(((program.current_day - 1) / program.duration_days) * 100, 1) if program else 0,
+                'plan_state': plan_state,
             },
             'journey_pacing': pacing_data,
             'weekly_review': weekly_review,
@@ -596,8 +601,8 @@ class CalendarDayStatusView(APIView):
                     pd.save(update_fields=['status', 'updated_at'])
                     if pd.status in ('COMPLETED', 'MISSED', 'REST') and day_num == program.current_day:
                         next_day = program.days.filter(
-                            day_number__gt=program.current_day, status='UPCOMING'
-                        ).order_by('day_number').first()
+                            day_number__gt=program.current_day
+                        ).exclude(status='COMPLETED').order_by('day_number').first()
                         if next_day:
                             program.current_day = next_day.day_number
                             program.save(update_fields=['current_day', 'updated_at'])

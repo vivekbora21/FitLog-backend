@@ -257,13 +257,20 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             if program:
                 program_day = ProgramDay.objects.filter(
                     program=program, day_number=program.current_day,
-                    routine_id=session.routine_id, status='UPCOMING'
+                    routine_id=session.routine_id, completed_session__isnull=True
                 ).first()
+                if not program_day:
+                    program_day = ProgramDay.objects.filter(
+                        program=program, routine_id=session.routine_id, completed_session__isnull=True
+                    ).exclude(status='COMPLETED').order_by('day_number').first()
+
                 if program_day:
                     program_day.status = 'COMPLETED'
                     program_day.completed_session = session
                     program_day.save(update_fields=['status', 'completed_session', 'updated_at'])
-                    next_day = program.days.filter(day_number__gt=program.current_day, status='UPCOMING').order_by('day_number').first()
+                    next_day = program.days.filter(
+                        day_number__gt=program_day.day_number
+                    ).exclude(status='COMPLETED').order_by('day_number').first()
                     if next_day:
                         program.current_day = next_day.day_number
                     else:
@@ -389,19 +396,33 @@ class ProgramDaySerializer(serializers.ModelSerializer):
     calendar_date = serializers.SerializerMethodField()
     completed_session_id = serializers.UUIDField(source='completed_session.id', read_only=True, allow_null=True)
     completed_session_title = serializers.CharField(source='completed_session.title', read_only=True, allow_null=True)
+    completed_exercise_count = serializers.SerializerMethodField()
+    completed_duration_seconds = serializers.IntegerField(source='completed_session.duration_seconds', read_only=True, allow_null=True)
+    completed_volume_kg = serializers.FloatField(source='completed_session.total_volume_kg', read_only=True, allow_null=True)
+    completed_session = WorkoutSessionSerializer(read_only=True, allow_null=True)
 
     class Meta:
         model = ProgramDay
         fields = [
             'id', 'day_number', 'calendar_date', 'label', 'is_optional', 'status', 'routine', 'routine_details',
             'completed_session_id', 'completed_session_title',
+            'completed_exercise_count', 'completed_duration_seconds', 'completed_volume_kg',
+            'completed_session',
             'workout_payload', 'meal_payload', 'macro_targets', 'expected_weight_kg',
         ]
 
     def get_calendar_date(self, obj):
         if not obj.program_id or not obj.program.start_date:
             return None
-        return (obj.program.start_date + timedelta(days=obj.day_number - 1)).isoformat()
+        scheduled = obj.scheduled_date or (obj.program.start_date + timedelta(days=obj.day_number - 1))
+        return scheduled.isoformat()
+
+    def get_completed_exercise_count(self, obj):
+        if not obj.completed_session_id:
+            return 0
+        # The plan endpoint prefetches these exercises, so this stays cheap for
+        # long programs while still exposing what was actually logged.
+        return len(obj.completed_session.exercises.all())
 
     def to_representation(self, instance):
         # Tells the nested RoutineExerciseSerializer which day it's rendering for, so it
