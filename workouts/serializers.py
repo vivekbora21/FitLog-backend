@@ -38,6 +38,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     total_volume_kg = serializers.FloatField(read_only=True)
     total_calories = serializers.IntegerField(read_only=True)
     new_prs = serializers.SerializerMethodField()
+    program_day_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+    day_number = serializers.IntegerField(write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = WorkoutSession
@@ -45,7 +47,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             'id', 'user', 'user_email', 'user_name', 'gym', 'gym_name', 'assigned_workout',
             'routine', 'title', 'started_at', 'completed_at', 'duration_seconds',
             'overall_rpe', 'notes', 'exercises', 'total_volume_kg', 'total_calories',
-            'new_prs', 'created_at', 'idempotency_key'
+            'new_prs', 'created_at', 'idempotency_key', 'program_day_id', 'day_number'
         ]
         read_only_fields = ['user', 'created_at']
         extra_kwargs = {'idempotency_key': {'write_only': True, 'required': False, 'allow_null': True}}
@@ -199,6 +201,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         exercises_data = validated_data.pop('exercises', [])
         user = self.context['request'].user
         idempotency_key = validated_data.pop('idempotency_key', None)
+        program_day_id = validated_data.pop('program_day_id', None)
+        day_number = validated_data.pop('day_number', None)
 
         # A retried "finish workout" request (client timeout + retry, double-tap) must
         # not create a second session, double-count volume/PRs, or double-advance the
@@ -252,30 +256,49 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 
         # A program day is not tied to a calendar date. Completing its session
         # advances the next unfinished prescription; missed dates never erase it.
-        if session.routine_id:
-            program = JourneyProgram.objects.filter(user=user, active=True).first()
-            if program:
-                program_day = ProgramDay.objects.filter(
-                    program=program, day_number=program.current_day,
+        # DATA-002: Support explicit program_day_id/day_number, routine-linked,
+        # and guided/ad-hoc sessions matching the active plan.
+        program = JourneyProgram.objects.filter(user=user, active=True).first()
+        if program:
+            program_day = None
+            if program_day_id:
+                program_day = program.days.filter(id=program_day_id, completed_session__isnull=True).first()
+            elif day_number:
+                program_day = program.days.filter(day_number=day_number, completed_session__isnull=True).first()
+            elif session.routine_id:
+                program_day = program.days.filter(
+                    day_number=program.current_day,
                     routine_id=session.routine_id, completed_session__isnull=True
                 ).first()
                 if not program_day:
-                    program_day = ProgramDay.objects.filter(
-                        program=program, routine_id=session.routine_id, completed_session__isnull=True
+                    program_day = program.days.filter(
+                        routine_id=session.routine_id, completed_session__isnull=True
+                    ).exclude(status='COMPLETED').order_by('day_number').first()
+            else:
+                # Guided or ad-hoc workout: match current unfinished day if label or date corresponds
+                session_date = session.started_at.date()
+                curr_day = program.days.filter(day_number=program.current_day, completed_session__isnull=True).first()
+                if curr_day:
+                    if curr_day.scheduled_date == session_date or (session.title and curr_day.label and session.title.lower() in curr_day.label.lower()):
+                        program_day = curr_day
+
+                if not program_day:
+                    program_day = program.days.filter(
+                        scheduled_date=session_date, completed_session__isnull=True
                     ).exclude(status='COMPLETED').order_by('day_number').first()
 
-                if program_day:
-                    program_day.status = 'COMPLETED'
-                    program_day.completed_session = session
-                    program_day.save(update_fields=['status', 'completed_session', 'updated_at'])
-                    next_day = program.days.filter(
-                        day_number__gt=program_day.day_number
-                    ).exclude(status='COMPLETED').order_by('day_number').first()
-                    if next_day:
-                        program.current_day = next_day.day_number
-                    else:
-                        program.active = False
-                    program.save(update_fields=['current_day', 'active', 'updated_at'])
+            if program_day:
+                program_day.status = 'COMPLETED'
+                program_day.completed_session = session
+                program_day.save(update_fields=['status', 'completed_session', 'updated_at'])
+                next_day = program.days.filter(
+                    day_number__gt=program_day.day_number
+                ).exclude(status='COMPLETED').order_by('day_number').first()
+                if next_day:
+                    program.current_day = next_day.day_number
+                else:
+                    program.active = False
+                program.save(update_fields=['current_day', 'active', 'updated_at'])
 
         AuditLog.objects.create(
             actor=user,
@@ -317,6 +340,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         return instance
 
 class RoutineExerciseSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(required=False, allow_null=True)
     exercise_name = serializers.CharField(source='exercise.name', read_only=True)
     primary_muscle = serializers.CharField(source='exercise.primary_muscle.name', read_only=True)
     met_value = serializers.FloatField(source='exercise.met_value', read_only=True)
@@ -386,10 +410,50 @@ class RoutineSerializer(serializers.ModelSerializer):
         user = self.context['request'].user
         routine = Routine.objects.create(created_by=user, last_modified_by=user, **validated_data)
 
-        for ex_data in exercises_data:
+        for idx, ex_data in enumerate(exercises_data):
+            ex_data.pop('id', None)
+            if 'order' not in ex_data:
+                ex_data['order'] = idx
             RoutineExercise.objects.create(routine=routine, **ex_data)
 
         return routine
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        exercises_data = validated_data.pop('exercises', None)
+        user = self.context['request'].user
+        instance.last_modified_by = user
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # If exercises list was explicitly submitted, synchronize child exercises
+        # (Preserves exercises on partial PATCH when exercises key is omitted)
+        if exercises_data is not None:
+            existing_map = {str(re.id): re for re in instance.exercises.all()}
+            kept_ids = set()
+
+            for idx, ex_data in enumerate(exercises_data):
+                ex_id = ex_data.pop('id', None)
+                if 'order' not in ex_data:
+                    ex_data['order'] = idx
+
+                if ex_id and str(ex_id) in existing_map:
+                    re_obj = existing_map[str(ex_id)]
+                    for k, v in ex_data.items():
+                        setattr(re_obj, k, v)
+                    re_obj.save()
+                    kept_ids.add(str(re_obj.id))
+                else:
+                    new_re = RoutineExercise.objects.create(routine=instance, **ex_data)
+                    kept_ids.add(str(new_re.id))
+
+            for re_id, re_obj in existing_map.items():
+                if re_id not in kept_ids:
+                    re_obj.delete()
+
+        return instance
 
 class ProgramDaySerializer(serializers.ModelSerializer):
     routine_details = RoutineSerializer(source='routine', read_only=True)
@@ -428,7 +492,68 @@ class ProgramDaySerializer(serializers.ModelSerializer):
         # Tells the nested RoutineExerciseSerializer which day it's rendering for, so it
         # can look up this day's exercise swaps without changing the shared Routine template.
         self.context['_current_program_day_id'] = instance.id
-        return super().to_representation(instance)
+        ret = super().to_representation(instance)
+
+        # DATA-001: Bridge guided plans (which store exercises in workout_payload) to expose
+        # a unified routine_details.exercises contract to all web and mobile clients.
+        routine_details = ret.get('routine_details')
+        has_relational_exercises = bool(routine_details and routine_details.get('exercises'))
+
+        if not has_relational_exercises and instance.workout_payload:
+            payload = instance.workout_payload
+            raw_exercises = []
+            if isinstance(payload, list):
+                raw_exercises = payload
+            elif isinstance(payload, dict):
+                raw_exercises = payload.get('exercises', [])
+
+            if raw_exercises:
+                # Efficient cached lookup of exercises to resolve IDs and muscles without N+1 queries
+                name_cache = self.context.setdefault('_exercise_lookup_cache', {})
+                uncached_names = [
+                    (e.get('exercise_name') or e.get('name')).strip()
+                    for e in raw_exercises
+                    if (e.get('exercise_name') or e.get('name')) and (e.get('exercise_name') or e.get('name')).strip().lower() not in name_cache
+                ]
+                if uncached_names:
+                    from exercises.models import Exercise
+                    for ex in Exercise.objects.filter(name__in=uncached_names).select_related('primary_muscle'):
+                        name_cache[ex.name.lower()] = ex
+
+                synthetic_exercises = []
+                for idx, item in enumerate(raw_exercises):
+                    ex_name = (item.get('exercise_name') or item.get('name') or f"Exercise {idx + 1}").strip()
+                    ex_obj = name_cache.get(ex_name.lower())
+                    synthetic_exercises.append({
+                        'id': item.get('id') or f"payload-{instance.id}-{idx}",
+                        'exercise': str(ex_obj.id) if ex_obj else (item.get('exercise') or item.get('exercise_id') or None),
+                        'exercise_name': ex_name,
+                        'primary_muscle': ex_obj.primary_muscle.name if (ex_obj and ex_obj.primary_muscle) else item.get('primary_muscle', ''),
+                        'met_value': ex_obj.met_value if ex_obj else item.get('met_value', 6.0),
+                        'order': idx,
+                        'target_sets': item.get('sets') or item.get('target_sets', 3),
+                        'target_reps': str(item.get('reps') or item.get('target_reps', '8-12')),
+                        'rest_seconds': item.get('rest_seconds', 90),
+                        'target_rpe': item.get('rpe'),
+                        'suggested_weight_kg': item.get('suggested_weight_kg'),
+                        'focus': item.get('focus', ''),
+                        'notes': item.get('notes', item.get('progression_rule', '')),
+                        'progression_rule': item.get('progression_rule', ''),
+                        'progression': None,
+                        'swap': None,
+                    })
+
+                if not routine_details:
+                    ret['routine_details'] = {
+                        'id': f"payload-routine-{instance.id}",
+                        'name': instance.label or 'Guided Workout',
+                        'description': 'Guided plan workout template',
+                        'exercises': synthetic_exercises,
+                    }
+                else:
+                    ret['routine_details']['exercises'] = synthetic_exercises
+
+        return ret
 
 class CardioEntrySerializer(serializers.ModelSerializer):
     calories = serializers.IntegerField(read_only=True)

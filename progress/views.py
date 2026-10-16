@@ -60,7 +60,16 @@ class BodyMeasurementViewSet(viewsets.ModelViewSet):
         return apply_date_range(BodyMeasurement.objects.filter(user=self.request.user), self.request, 'date').order_by('-date')
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        user = self.request.user
+        meas_date = serializer.validated_data.get('date')
+        existing = BodyMeasurement.objects.filter(user=user, date=meas_date).first()
+        if existing:
+            for attr, val in serializer.validated_data.items():
+                setattr(existing, attr, val)
+            existing.save()
+            serializer.instance = existing
+        else:
+            serializer.save(user=user)
 
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request):
@@ -173,6 +182,22 @@ class BodyMeasurementViewSet(viewsets.ModelViewSet):
         ]
         symmetry = [s for s in symmetry if s is not None]
 
+        # MEAS-002: Dynamic measurement frequency comparison vs previous 30-day window
+        today_date = timezone.localdate()
+        thirty_days_ago = today_date - timedelta(days=30)
+        sixty_days_ago = today_date - timedelta(days=60)
+        recent_count = sum(1 for m in measurements if m.date >= thirty_days_ago)
+        prev_count = sum(1 for m in measurements if sixty_days_ago <= m.date < thirty_days_ago)
+        delta_month = recent_count - prev_count
+        if prev_count == 0 and recent_count == 0:
+            recent_pill = None
+        elif delta_month > 0:
+            recent_pill = f"↑ +{delta_month} vs last month"
+        elif delta_month < 0:
+            recent_pill = f"↓ {delta_month} vs last month"
+        else:
+            recent_pill = "Same as last month"
+
         return Response({
             'has_data': True,
             'total_logs': total_logs,
@@ -196,7 +221,7 @@ class BodyMeasurementViewSet(viewsets.ModelViewSet):
                 },
                 'measurements_logged': {
                     'total': total_logs,
-                    'recent_pill': '↑ +2 vs last month',
+                    'recent_pill': recent_pill,
                 },
             },
             'overview': overview,
@@ -302,6 +327,7 @@ class PersonalRecordViewSet(viewsets.ModelViewSet):
                 existing.reps = reps
                 existing.estimated_one_rep_max = est_1rm
                 existing.achieved_at = achieved_at
+                existing.is_manual = True
                 existing.save()
             serializer = self.get_serializer(existing)
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -314,7 +340,7 @@ class PersonalRecordViewSet(viewsets.ModelViewSet):
         est = serializer.validated_data.get('estimated_one_rep_max')
         if not est and max_weight:
             est = PersonalRecord.calculate_epley_1rm(max_weight, reps)
-        serializer.save(user=self.request.user, estimated_one_rep_max=est)
+        serializer.save(user=self.request.user, estimated_one_rep_max=est, is_manual=True)
 
 
 class DailyLogViewSet(viewsets.ModelViewSet):

@@ -205,3 +205,63 @@ class DailyLogTests(TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["steps"], 8000)
 
+
+from exercises.models import Exercise, MuscleGroup, EquipmentType
+from progress.models import PersonalRecord
+from progress.records import recompute_personal_records
+
+class ProgressRemediationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='prog_rem@example.com', username='prog_rem', password='StrongPass123!')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_meas_001_same_day_measurement_upsert(self):
+        d = '2026-10-16'
+        res1 = self.client.post('/api/progress/measurements/', {
+            'date': d,
+            'waist_cm': 82.0,
+            'chest_cm': 100.0,
+        }, format='json')
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(BodyMeasurement.objects.filter(user=self.user, date=d).count(), 1)
+
+        # Post second measurement for same day
+        res2 = self.client.post('/api/progress/measurements/', {
+            'date': d,
+            'waist_cm': 81.5,
+            'hips_cm': 95.0,
+        }, format='json')
+        self.assertIn(res2.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+        # Ensure only 1 record exists for the day
+        measurements = BodyMeasurement.objects.filter(user=self.user, date=d)
+        self.assertEqual(measurements.count(), 1)
+        record = measurements.first()
+        self.assertEqual(float(record.waist_cm), 81.5)
+
+    def test_work_003_manual_pr_preserved_on_recomputation(self):
+        muscle = MuscleGroup.objects.create(name='Chest', slug='chest-pr')
+        equip = EquipmentType.objects.create(name='Barbell', slug='barbell-pr')
+        ex = Exercise.objects.create(name='Bench Press', slug='bench-pr', primary_muscle=muscle, equipment=equip)
+
+        # User manually records a historical PR
+        pr = PersonalRecord.objects.create(
+            user=self.user,
+            exercise=ex,
+            max_weight_kg=120.0,
+            reps=1,
+            estimated_one_rep_max=120.0,
+            achieved_at=date(2025, 5, 1),
+            is_manual=True,
+        )
+
+        # Recompute all PRs (e.g. after editing/deleting workout sessions)
+        recompute_personal_records(self.user, [ex.id])
+
+        # Manual PR must be preserved!
+        self.assertTrue(PersonalRecord.objects.filter(id=pr.id).exists())
+        pr.refresh_from_db()
+        self.assertEqual(float(pr.max_weight_kg), 120.0)
+        self.assertTrue(pr.is_manual)
+
+

@@ -590,3 +590,140 @@ class StandaloneCardioCalorieTests(TestCase):
         today_entry = next(h for h in res.data['history'] if h['date'] == timezone.localdate().isoformat())
         self.assertGreater(today_entry['calories_burned'], 0)
         self.assertTrue(today_entry['has_workout'])
+
+
+class FitLogConsistencyRemediationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='remediation@example.com', username='remediation', password='StrongPass123!')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.chest = MuscleGroup.objects.create(name='Chest', slug='chest-rem')
+        self.barbell = EquipmentType.objects.create(name='Barbell', slug='barbell-rem')
+        self.bench = Exercise.objects.create(
+            name='Barbell Bench Press',
+            slug='barbell-bench-press-rem',
+            primary_muscle=self.chest,
+            equipment=self.barbell,
+            instructions='Press bar from chest.',
+        )
+        self.routine = Routine.objects.create(user=self.user, name='Default Routine')
+
+    def test_data_001_guided_plan_exercise_synthesis_from_workout_payload(self):
+        program = JourneyProgram.objects.create(
+            user=self.user, name='Blueprint Plan', mode='CUT',
+            start_date=timezone.localdate(), duration_days=14, current_day=1, active=True,
+        )
+        payload = [
+            {
+                'exercise_id': str(self.bench.id),
+                'exercise_name': 'Barbell Bench Press',
+                'target_sets': 4,
+                'target_reps': '8-10',
+                'rest_seconds': 90,
+                'order': 1,
+            }
+        ]
+        p_day = ProgramDay.objects.create(
+            program=program, day_number=1, routine=self.routine, label='Push Day', status='UPCOMING', workout_payload=payload
+        )
+        res = self.client.get('/api/workouts/sessions/today/')
+        self.assertEqual(res.status_code, 200)
+        today_data = res.data.get('today')
+        self.assertIsNotNone(today_data)
+        routine_details = today_data.get('routine_details')
+        self.assertIsNotNone(routine_details)
+        exercises = routine_details.get('exercises', [])
+        self.assertEqual(len(exercises), 1)
+        self.assertEqual(exercises[0]['exercise_name'], 'Barbell Bench Press')
+        self.assertEqual(exercises[0]['target_sets'], 4)
+
+    def test_data_002_session_program_day_linking_and_advancement_and_deletion(self):
+        program = JourneyProgram.objects.create(
+            user=self.user, name='Advancement Plan', mode='CUT',
+            start_date=timezone.localdate(), duration_days=7, current_day=1, active=True,
+        )
+        p_day = ProgramDay.objects.create(
+            program=program, day_number=1, routine=self.routine, label='Chest & Triceps', status='UPCOMING'
+        )
+        p_day2 = ProgramDay.objects.create(
+            program=program, day_number=2, routine=self.routine, label='Back & Biceps', status='UPCOMING'
+        )
+        # Log session linking to day 1
+        res = self.client.post('/api/workouts/sessions/', {
+            'program_day_id': str(p_day.id),
+            'started_at': timezone.now().isoformat(),
+            'completed_at': (timezone.now() + timedelta(minutes=45)).isoformat(),
+            'notes': 'Solid workout',
+            'exercises': [],
+        }, format='json')
+        self.assertEqual(res.status_code, 201)
+        session_id = res.data['id']
+        p_day.refresh_from_db()
+        program.refresh_from_db()
+        self.assertEqual(p_day.status, 'COMPLETED')
+        self.assertEqual(str(p_day.completed_session_id), str(session_id))
+        self.assertEqual(program.current_day, 2)
+
+        # Deleting session resets program day to UPCOMING and rewinds current_day
+        del_res = self.client.delete(f'/api/workouts/sessions/{session_id}/')
+        self.assertEqual(del_res.status_code, 204)
+        p_day.refresh_from_db()
+        program.refresh_from_db()
+        self.assertEqual(p_day.status, 'UPCOMING')
+        self.assertIsNone(p_day.completed_session)
+        self.assertEqual(program.current_day, 1)
+
+    def test_work_002_nested_routine_exercise_update(self):
+        routine = Routine.objects.create(user=self.user, name='Chest Day Routine')
+        re1 = RoutineExercise.objects.create(
+            routine=routine, exercise=self.bench, order=1, target_sets=3, target_reps='10', rest_seconds=60
+        )
+        # Add a second exercise
+        incline = Exercise.objects.create(
+            name='Incline Dumbbell Press',
+            slug='incline-db-press-rem',
+            primary_muscle=self.chest,
+            equipment=self.barbell,
+            instructions='Press dumbbells on incline.',
+        )
+        # PUT update with nested exercises
+        update_data = {
+            'name': 'Updated Chest Day Routine',
+            'exercises': [
+                {
+                    'id': str(re1.id),
+                    'exercise': str(self.bench.id),
+                    'order': 1,
+                    'target_sets': 4,
+                    'target_reps': '8-10',
+                    'rest_seconds': 90,
+                },
+                {
+                    'exercise': str(incline.id),
+                    'order': 2,
+                    'target_sets': 3,
+                    'target_reps': '12',
+                    'rest_seconds': 60,
+                }
+            ]
+        }
+        res = self.client.put(f'/api/workouts/routines/{routine.id}/', update_data, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        routine.refresh_from_db()
+        self.assertEqual(routine.name, 'Updated Chest Day Routine')
+        self.assertEqual(routine.exercises.count(), 2)
+        re1.refresh_from_db()
+        self.assertEqual(re1.target_sets, 4)
+
+    def test_date_003_future_plan_pre_start_flags(self):
+        future_start = timezone.localdate() + timedelta(days=3)
+        program = JourneyProgram.objects.create(
+            user=self.user, name='Future Plan', mode='CUT',
+            start_date=future_start, duration_days=14, current_day=1, active=True,
+        )
+        ProgramDay.objects.create(program=program, day_number=1, routine=self.routine, label='Future Day 1', status='UPCOMING')
+        res = self.client.get('/api/workouts/sessions/today/')
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data.get('is_pre_start'))
+        self.assertEqual(res.data.get('days_until_start'), 3)
+

@@ -72,7 +72,18 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         user = instance.user
         exercise_ids = list(instance.exercises.values_list('exercise_id', flat=True))
         with transaction.atomic():
+            program_days = list(ProgramDay.objects.filter(completed_session=instance).select_related('program'))
             instance.delete()
+            for pd in program_days:
+                pd.status = 'UPCOMING'
+                pd.completed_session = None
+                pd.save(update_fields=['status', 'completed_session', 'updated_at'])
+                if pd.program.active:
+                    first_incomplete = pd.program.days.exclude(status='COMPLETED').order_by('day_number').first()
+                    if first_incomplete:
+                        pd.program.current_day = first_incomplete.day_number
+                        pd.program.save(update_fields=['current_day', 'updated_at'])
+                    reconcile_plan(pd.program)
             recompute_personal_records(user, exercise_ids)
 
     @action(detail=False, methods=['get'], url_path='last-performance')
@@ -146,6 +157,9 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         else:
             target_date = timezone.localdate()
 
+        is_pre_start = bool(program.start_date and target_date < program.start_date)
+        days_until_start = (program.start_date - target_date).days if is_pre_start else 0
+
         # 1. Did the user complete a workout session on target_date?
         session_on_date = WorkoutSession.objects.filter(
             user=request.user, started_at__date=target_date
@@ -155,16 +169,21 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         if session_on_date:
             day = program.days.filter(completed_session=session_on_date).first()
 
-        # 2. If no linked session, check if any program day was scheduled or self-reported completed on target_date
-        if not day:
+        # 2. If no linked session and not pre-start, check scheduled or active day
+        if not day and not is_pre_start:
             if requested_date_str:
                 day = program.days.filter(scheduled_date=target_date).first()
                 if not day:
                     day_number = (target_date - program.start_date).days + 1
-                    day = program.days.filter(day_number=day_number).first()
+                    if day_number >= 1:
+                        day = program.days.filter(day_number=day_number).first()
             else:
                 # On today without a logged workout, show the current active day
                 day = program.days.filter(day_number=program.current_day).first()
+
+        upcoming_start_day = None
+        if is_pre_start:
+            upcoming_start_day = program.days.filter(day_number=1).first()
 
         if day:
             day = program.days.filter(id=day.id).select_related(
@@ -191,7 +210,10 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 'duration_days': program.duration_days,
             },
             'plan_state': plan_state,
-            'today': ProgramDaySerializer(day, context={'request': request}).data if day else None
+            'is_pre_start': is_pre_start,
+            'days_until_start': days_until_start,
+            'today': ProgramDaySerializer(day, context={'request': request}).data if day else None,
+            'upcoming_start_day': ProgramDaySerializer(upcoming_start_day, context={'request': request}).data if upcoming_start_day else None,
         })
 
     @action(detail=False, methods=['get'], url_path='day-status')
@@ -562,7 +584,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         # Backend calculations for Plan History & Progress telemetry
         start_bf = weight_log[0].get('body_fat_pct') if (weight_log and weight_log[0].get('body_fat_pct')) else None
         current_bf = weight_log[-1].get('body_fat_pct') if (weight_log and weight_log[-1].get('body_fat_pct')) else None
-        fat_burned_kg = 5.765
+        fat_burned_kg = 0.0
         if start_weight and current_weight:
             if start_bf and current_bf:
                 start_fat_mass = start_weight * (start_bf / 100.0)
@@ -574,21 +596,21 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
                 fat_burned_kg = round(abs(weight_change) * 0.85, 3)
 
         prescribed_count = completed_days + missed_days
-        consistency_pct = round((completed_days / max(1, prescribed_count)) * 100) if prescribed_count > 0 else 97
+        consistency_pct = round((completed_days / max(1, prescribed_count)) * 100) if prescribed_count > 0 else 0
         completion_rate_pct = round((completed_days / max(1, program.duration_days)) * 100)
 
         # Today's nutrition status calculation
         today_nd = NutritionDay.objects.filter(user=request.user, date=today).first()
-        today_cal = today_nd.total_calories() if today_nd else 2044
-        target_cal = macro_target.daily_calories if macro_target else 2160
-        today_pct = round((today_cal / max(1, target_cal)) * 100)
-        today_meals_cnt = today_nd.meals.count() if (today_nd and today_nd.meals.exists()) else 5
+        today_cal = today_nd.total_calories() if today_nd else 0
+        target_cal = macro_target.daily_calories if macro_target else 2000
+        today_pct = round((today_cal / max(1, target_cal)) * 100) if today_cal > 0 else 0
+        today_meals_cnt = today_nd.meals.count() if (today_nd and today_nd.meals.exists()) else 0
         nutrition_status = {
             'consumed_calories': today_cal,
             'target_calories': target_cal,
             'percentage': today_pct,
             'meals_logged': today_meals_cnt,
-            'label': f"{today_pct}% Cal / {today_meals_cnt} meals logged today",
+            'label': f"{today_pct}% Cal / {today_meals_cnt} meals logged today" if today_meals_cnt > 0 else "No meals logged today",
             'is_on_track': today_cal <= target_cal,
         }
 
@@ -827,41 +849,81 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             target_cardio_minutes_later=75 if mode == 'BULK' else (105 if mode == 'FOCUS' else 150),
         )
 
-        # 4. Schedule ProgramDay rows
-        user_gym_ids = GymMembership.objects.filter(user=user, status='ACTIVE').values_list('gym_id', flat=True)
-        available_routines = list(Routine.objects.filter(
-            models.Q(user=user) | models.Q(gym_id__in=user_gym_ids)
-        ).order_by('created_at').distinct())
+        # 4. Schedule ProgramDay rows: if blueprint is specified or matches mode, generate canonical roadmap
+        from plans.models import Blueprint
+        from plans.services import plan_generator
+        bp_obj = None
+        if blueprint:
+            bp_slug = str(blueprint).lower().replace('_', '-')
+            bp_obj = Blueprint.objects.filter(models.Q(slug=bp_slug) | models.Q(mode__iexact=blueprint)).first()
+        if not bp_obj and mode:
+            bp_obj = Blueprint.objects.filter(mode=mode).first()
 
-        if not available_routines:
-            default_r, _ = Routine.objects.get_or_create(
+        if bp_obj:
+            user_inputs = {
+                'mode': bp_obj.mode,
+                'duration_days': duration_days,
+                'current_weight_kg': start_weight_kg,
+                'goal_weight_kg': target_weight_kg,
+                'start_date': start_date,
+            }
+            roadmap = plan_generator.generate_roadmap(blueprint=bp_obj, user_inputs=user_inputs)
+            placeholder_routine, _ = Routine.objects.get_or_create(
                 user=user,
-                name='Full Body Foundation',
-                defaults={'description': 'Core strength and full body hypertrophy.'}
+                name=f"{new_program.name} Plan",
+                defaults={'description': 'Auto-generated for a guided plan.'}
             )
-            available_routines = [default_r]
+            program_days = []
+            for day_data in roadmap['days']:
+                program_days.append(ProgramDay(
+                    program=new_program,
+                    day_number=day_data['day_number'],
+                    scheduled_date=day_data['date'],
+                    routine=placeholder_routine,
+                    label=day_data['label'],
+                    is_optional=day_data['is_rest'],
+                    status='UPCOMING',
+                    workout_payload=day_data['workout'],
+                    meal_payload=roadmap.get('meal_template'),
+                    macro_targets=day_data.get('targets'),
+                    expected_weight_kg=day_data.get('expected_weight_kg'),
+                ))
+            ProgramDay.objects.bulk_create(program_days)
+        else:
+            user_gym_ids = GymMembership.objects.filter(user=user, status='ACTIVE').values_list('gym_id', flat=True)
+            available_routines = list(Routine.objects.filter(
+                models.Q(user=user) | models.Q(gym_id__in=user_gym_ids)
+            ).order_by('created_at').distinct())
 
-        num_routines = len(available_routines)
-        program_days = []
-        for d in range(1, duration_days + 1):
-            r = available_routines[(d - 1) % num_routines]
-            is_optional = ((d % 7) == 6)
-            is_rest = ((d % 7) == 0)
-            label = f"Day {d}: {r.name}"
-            if is_rest:
-                label = f"Day {d}: Recovery & Active Rest"
+            if not available_routines:
+                default_r, _ = Routine.objects.get_or_create(
+                    user=user,
+                    name='Full Body Foundation',
+                    defaults={'description': 'Core strength and full body hypertrophy.'}
+                )
+                available_routines = [default_r]
 
-            program_days.append(ProgramDay(
-                program=new_program,
-                day_number=d,
-                scheduled_date=start_date + timedelta(days=d - 1),
-                routine=r,
-                label=label,
-                is_optional=is_optional or is_rest,
-                status='UPCOMING'
-            ))
+            num_routines = len(available_routines)
+            program_days = []
+            for d in range(1, duration_days + 1):
+                r = available_routines[(d - 1) % num_routines]
+                is_optional = ((d % 7) == 6)
+                is_rest = ((d % 7) == 0)
+                label = f"Day {d}: {r.name}"
+                if is_rest:
+                    label = f"Day {d}: Recovery & Active Rest"
 
-        ProgramDay.objects.bulk_create(program_days)
+                program_days.append(ProgramDay(
+                    program=new_program,
+                    day_number=d,
+                    scheduled_date=start_date + timedelta(days=d - 1),
+                    routine=r,
+                    label=label,
+                    is_optional=is_optional or is_rest,
+                    status='UPCOMING'
+                ))
+
+            ProgramDay.objects.bulk_create(program_days)
 
         # Recalibrate MacroTarget for the new plan mode (BULK vs CUT etc.)
         rec = calculate_recommended_targets(user)
@@ -870,7 +932,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
             for field in ('daily_calories', 'protein_g', 'carbs_g', 'fat_g'):
                 setattr(target, field, rec[field])
             target.save()
-        else:
+        elif not target.daily_calories or not target.protein_g:
             if mode == 'BULK':
                 target.daily_calories = 2700
                 target.protein_g = 160
@@ -916,10 +978,10 @@ class RoutineViewSet(viewsets.ModelViewSet):
         # User's active gym IDs
         user_gym_ids = GymMembership.objects.filter(user=user, status='ACTIVE').values_list('gym_id', flat=True)
 
-        # Personal routines OR templates from gyms user belongs to
+        # Personal routines OR templates from gyms user belongs to (excluding archived)
         return Routine.objects.filter(
             models.Q(user=user) | models.Q(gym_id__in=user_gym_ids)
-        ).prefetch_related('exercises__exercise').distinct()
+        ).filter(is_archived=False).prefetch_related('exercises__exercise').distinct()
 
     def perform_destroy(self, instance):
         user = self.request.user
@@ -935,13 +997,20 @@ class RoutineViewSet(viewsets.ModelViewSet):
         elif instance.user_id != user.id:
             raise PermissionDenied('You can only delete your own routine.')
 
+        if instance.program_days.filter(program__active=True).exists():
+            raise ValidationError('Cannot delete a routine template currently used by an active program.')
+
+        if instance.program_days.exists():
+            # DB-002: Preserve historical program days by archiving rather than failing
+            instance.is_archived = True
+            instance.save(update_fields=['is_archived'])
+            return
+
         try:
             instance.delete()
         except ProtectedError:
-            raise ValidationError(
-                'This routine is scheduled in an active training program and cannot be deleted. '
-                'Remove it from the program first.'
-            )
+            instance.is_archived = True
+            instance.save(update_fields=['is_archived'])
 
 class AssignedWorkoutViewSet(viewsets.ModelViewSet):
     serializer_class = AssignedWorkoutSerializer

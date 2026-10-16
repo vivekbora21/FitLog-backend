@@ -36,6 +36,17 @@ def reconcile_plan(program: JourneyProgram, today: date | None = None):
         changed_program.append('effective_end_date')
 
     days = list(program.days.select_related('routine', 'completed_session').all())
+    
+    # DATE-002: Synchronize current_day to earliest unfinished prescription if a completed day was cleared
+    earliest_unfinished = None
+    for d in days:
+        if not _is_rest_day(d) and d.status != 'COMPLETED' and not d.completed_session_id:
+            earliest_unfinished = d
+            break
+    if earliest_unfinished and program.current_day > earliest_unfinished.day_number:
+        program.current_day = earliest_unfinished.day_number
+        changed_program.append('current_day')
+
     for day in days:
         scheduled = _scheduled_date(program, day)
         if day.scheduled_date is None:
@@ -78,6 +89,8 @@ def build_plan_state(program: JourneyProgram, today: date | None = None, days=No
     scheduled = [d for d in eligible if _scheduled_date(program, d) <= effective_end]
     elapsed = max(0, min((today - program.start_date).days + 1, (effective_end - program.start_date).days + 1))
     total_calendar_days = max(1, (effective_end - program.start_date).days + 1)
+    is_pre_start = bool(program.start_date and today < program.start_date)
+    days_until_start = (program.start_date - today).days if is_pre_start else 0
     return {
         'start_date': program.start_date.isoformat(),
         'original_end_date': original_end.isoformat(),
@@ -96,4 +109,6 @@ def build_plan_state(program: JourneyProgram, today: date | None = None, days=No
         'extension_days': program.extension_days,
         'extension_eligible': program.plan_status == 'COMPLETED' and bool(missed) and program.extension_status == 'NONE',
         'near_completion': program.plan_status == 'ACTIVE' and (effective_end - today).days == 3,
+        'is_pre_start': is_pre_start,
+        'days_until_start': days_until_start,
     }

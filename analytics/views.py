@@ -393,7 +393,7 @@ class DashboardStatsView(APIView):
                     'routine_id': str(pd.routine_id) if pd.routine_id else None,
                     'routine_name': pd.routine.name if pd.routine else '',
                     'status': pd.status,
-                    'calendar_date': (program.start_date + timedelta(days=pd.day_number - 1)).isoformat(),
+                    'calendar_date': k,
                     'is_optional': pd.is_optional,
                 } if pd else None,
             }
@@ -598,7 +598,14 @@ class CalendarDayStatusView(APIView):
                         pd.status = 'MISSED'
                     elif new_status == 'CLEAR':
                         pd.status = 'UPCOMING'
-                    pd.save(update_fields=['status', 'updated_at'])
+                        pd.completed_session = None
+                        pd.save(update_fields=['status', 'completed_session', 'updated_at'])
+                        if day_num <= program.current_day:
+                            program.current_day = day_num
+                            program.save(update_fields=['current_day', 'updated_at'])
+                    else:
+                        pd.save(update_fields=['status', 'updated_at'])
+
                     if pd.status in ('COMPLETED', 'MISSED', 'REST') and day_num == program.current_day:
                         next_day = program.days.filter(
                             day_number__gt=program.current_day

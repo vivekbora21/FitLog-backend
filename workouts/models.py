@@ -33,6 +33,7 @@ class Routine(UUIDTimeStampedModel):
         null=True,
         related_name='modified_routines'
     )
+    is_archived = models.BooleanField(default=False)
 
     def is_gym_template(self):
         return self.gym is not None

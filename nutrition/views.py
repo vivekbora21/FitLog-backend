@@ -53,7 +53,7 @@ class NutritionDayView(APIView):
                 return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
 
         day, _ = NutritionDay.objects.get_or_create(user=request.user, date=target_date)
-        target = get_or_create_macro_target(request.user)
+        target = TargetTimeline(request.user).on(target_date)
 
         yesterday = target_date - timedelta(days=1)
         yesterday_day = NutritionDay.objects.filter(user=request.user, date=yesterday).first()

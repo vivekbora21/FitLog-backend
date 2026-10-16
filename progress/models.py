@@ -58,6 +58,12 @@ class BodyMeasurement(UUIDTimeStampedModel):
 
     class Meta:
         ordering = ['-date']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'date'],
+                name='unique_user_body_measurement_date'
+            )
+        ]
 
     def __str__(self):
         return f"Measurements {self.user.email} on {self.date}"
@@ -87,6 +93,7 @@ class PersonalRecord(UUIDTimeStampedModel):
     # the eligibility bar in progress/records.py (reps cap + weight-vs-previous-best floor).
     is_improved = models.BooleanField(default=False)
     improvement_count = models.PositiveIntegerField(default=0)
+    is_manual = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-estimated_one_rep_max']

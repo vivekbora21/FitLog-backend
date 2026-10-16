@@ -53,8 +53,17 @@ def recompute_personal_records(user, exercise_ids):
                 best, best_1rm = s, est
                 improvement_count += 1
 
+        existing_pr = PersonalRecord.objects.filter(user=user, exercise_id=exercise_id).first()
         if best is None:
-            PersonalRecord.objects.filter(user=user, exercise_id=exercise_id).delete()
+            # WORK-003: Do not delete manually logged personal records
+            if existing_pr and getattr(existing_pr, 'is_manual', False):
+                continue
+            if existing_pr:
+                existing_pr.delete()
+            continue
+
+        # If existing record is manual and has a higher 1RM than logged sets, preserve it
+        if existing_pr and getattr(existing_pr, 'is_manual', False) and existing_pr.estimated_one_rep_max >= best_1rm:
             continue
 
         PersonalRecord.objects.update_or_create(
@@ -67,6 +76,7 @@ def recompute_personal_records(user, exercise_ids):
                 'achieved_at': best.workout_exercise.session.started_at.date(),
                 'is_improved': improvement_count > 0,
                 'improvement_count': improvement_count,
+                'is_manual': False,
             },
         )
 
